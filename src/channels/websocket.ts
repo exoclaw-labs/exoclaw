@@ -63,6 +63,59 @@ export function setupWebSocket(server: Server, claude: Claude, apiToken?: string
 
   wss.on("connection", (ws: WebSocket, sessionId: string, name?: string) => {
     log(`Connected: ${sessionId}`);
+    const queue: string[] = [];
+    let processing = false;
+
+    async function processQueue() {
+      if (processing) return;
+      processing = true;
+      while (queue.length > 0) {
+        const content = queue.shift()!;
+        // Wait for session to be free before sending (max 5 minutes)
+        const deadline = Date.now() + 5 * 60 * 1000;
+        while (claude.busy) {
+          if (Date.now() > deadline) {
+            ws.send(JSON.stringify({ type: "error", message: "Session timed out waiting to process queued message", code: "QUEUE_TIMEOUT" }));
+            processing = false;
+            return;
+          }
+          await new Promise(r => setTimeout(r, 500));
+          if (ws.readyState !== WebSocket.OPEN) { processing = false; return; }
+        }
+        await processMessage(content);
+      }
+      processing = false;
+    }
+
+    async function processMessage(content: string) {
+      let fullResponse = "";
+      try {
+        for await (const event of claude.send(content)) {
+          if (ws.readyState !== WebSocket.OPEN) break;
+
+          if (event.type === "chunk") {
+            fullResponse += event.content;
+            ws.send(JSON.stringify({ type: "chunk", content: event.content }));
+          } else if (event.type === "tool") {
+            ws.send(JSON.stringify({ type: "tool_call", name: event.content, args: {} }));
+          } else if (event.type === "done") {
+            fullResponse = event.content || fullResponse;
+            const leak = scanForLeaks(fullResponse);
+            if (leak.leaked) {
+              log(`Credential leak blocked: ${leak.reason}`);
+              fullResponse = "[Response redacted — contained sensitive credentials. The agent has been notified.]";
+            }
+            ws.send(JSON.stringify({ type: "done", full_response: fullResponse }));
+          } else if (event.type === "error") {
+            ws.send(JSON.stringify({ type: "error", message: event.content, code: "AGENT_ERROR" }));
+          }
+        }
+      } catch (err) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "error", message: String(err), code: "AGENT_ERROR" }));
+        }
+      }
+    }
 
     // Session start
     ws.send(JSON.stringify({
@@ -82,8 +135,6 @@ export function setupWebSocket(server: Server, claude: Claude, apiToken?: string
         return;
       }
 
-      // Accept zeroclaw protocol: { type: "message", content: "..." }
-      // Also accept simple: { prompt: "..." } for backwards compat
       const content = parsed.content || (parsed as any).prompt;
       if (!content) {
         ws.send(JSON.stringify({ type: "error", message: "Message content required", code: "INVALID_REQUEST" }));
@@ -98,40 +149,13 @@ export function setupWebSocket(server: Server, claude: Claude, apiToken?: string
         ws.send(JSON.stringify({ type: "error", message: "Session not running", code: "SESSION_DOWN" }));
         return;
       }
-      if (claude.busy) {
-        ws.send(JSON.stringify({ type: "error", message: "Session is busy", code: "SESSION_BUSY" }));
-        return;
+
+      // Queue the message and notify the user
+      queue.push(content);
+      if (queue.length > 1) {
+        ws.send(JSON.stringify({ type: "queued", position: queue.length, content }));
       }
-
-      let fullResponse = "";
-
-      try {
-        for await (const event of claude.send(content)) {
-          if (ws.readyState !== WebSocket.OPEN) break;
-
-          if (event.type === "chunk") {
-            fullResponse += event.content;
-            ws.send(JSON.stringify({ type: "chunk", content: event.content }));
-          } else if (event.type === "tool") {
-            ws.send(JSON.stringify({ type: "tool_call", name: event.content, args: {} }));
-          } else if (event.type === "done") {
-            fullResponse = event.content || fullResponse;
-            // Scan for credential leaks before sending to user
-            const leak = scanForLeaks(fullResponse);
-            if (leak.leaked) {
-              log(`Credential leak blocked: ${leak.reason}`);
-              fullResponse = "[Response redacted — contained sensitive credentials. The agent has been notified.]";
-            }
-            ws.send(JSON.stringify({ type: "done", full_response: fullResponse }));
-          } else if (event.type === "error") {
-            ws.send(JSON.stringify({ type: "error", message: event.content, code: "AGENT_ERROR" }));
-          }
-        }
-      } catch (err) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "error", message: String(err), code: "AGENT_ERROR" }));
-        }
-      }
+      processQueue();
     });
 
     ws.on("close", () => log(`Disconnected: ${sessionId}`));

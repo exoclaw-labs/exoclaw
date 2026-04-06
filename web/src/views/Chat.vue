@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted } from "vue";
+import { ref, nextTick, watch, onMounted, onUnmounted } from "vue";
 import { marked } from "marked";
 import { useChatStore } from "../composables/useChatStore";
 
@@ -27,8 +27,16 @@ function handleSend() {
 
 function copyText(text: string) { navigator.clipboard.writeText(text); }
 
+// Focus input on any keypress in the window
+function onKeydown(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.activeElement === inputEl.value) return;
+  inputEl.value?.focus();
+}
+
 // Scroll to bottom on mount and when messages change
-onMounted(scrollBottom);
+onMounted(() => { scrollBottom(); window.addEventListener("keydown", onKeydown); });
+onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 watch(() => state.messages.length, scrollBottom);
 watch(() => state.messages[state.messages.length - 1]?.content, scrollBottom);
 
@@ -89,8 +97,8 @@ watch(() => state.busy, (busy) => { if (!busy) nextTick(() => inputEl.value?.foc
 
     <!-- Input -->
     <form @submit.prevent="handleSend" class="p-3 border-top d-flex gap-2">
-      <input ref="inputEl" v-model="input" :disabled="state.busy" placeholder="Send a message..." autofocus class="form-control" />
-      <button type="submit" class="btn btn-primary" :disabled="state.busy || !input.trim()">
+      <input ref="inputEl" v-model="input" :disabled="!state.connected" placeholder="Send a message..." autofocus class="form-control" />
+      <button type="submit" class="btn btn-primary" :disabled="!state.connected || !input.trim()">
         <i class="bi bi-send"></i>
       </button>
     </form>
