@@ -1,0 +1,11 @@
+{
+  "containers": {
+    "chloe": {
+      "webhook": "http://localhost:8081/webhook",
+      "contacts": []
+    }
+  },
+  "mcp_url": "http://localhost:8010",
+  "poll_interval": 3,
+  "default_container": "chloe"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "exoclaw-channel",
+  "version": "0.1.0",
+  "description": "Exoclaw gateway channel — bridges web chat, webhooks, and messaging channels to this Claude session"
+}

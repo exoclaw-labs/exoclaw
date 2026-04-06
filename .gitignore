@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.sw?
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime data
+*.pid
+*.sqlite
+*.sqlite-journal
+
+docker-compose.override.yml

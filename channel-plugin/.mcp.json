@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "exoclaw-channel": {
+      "command": "node",
+      "args": ["/app/dist/channel-server.js"],
+      "env": {
+        "CHANNEL_PORT": "3200"
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+
+import { serve } from "@hono/node-server";
+import type { Server } from "http";
+import { loadConfig } from "./config-store.js";
+import { createApp, type GatewayConfig } from "./server.js";
+import { startDiscord } from "./channels/discord.js";
+import { startTelegram } from "./channels/telegram.js";
+import { setupWebSocket } from "./channels/websocket.js";
+
+const config = loadConfig() as GatewayConfig;
+
+// Pass the gateway name into the claude config so it's used for --name and remote control
+if (config.name && config.claude) {
+  config.claude.name = config.name;
+}
+
+const { app, claude, sessionDb, sessionIndexer, reviewer, scheduler, rateLimiter, estop } = createApp(config);
+
+const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
+  log(`"${config.name}" listening on http://${info.address}:${info.port}`);
+});
+
+if (config.channels.discord?.enabled) startDiscord(claude);
+if (config.channels.telegram?.enabled) startTelegram(claude);
+if (config.channels.websocket?.enabled) setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
+
+const shutdown = () => {
+  log("Shutting down");
+  scheduler.stop();
+  rateLimiter.stop();
+  sessionIndexer.stop();
+  sessionDb.close();
+  claude.close();
+  server.close(() => process.exit(0));
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+function log(msg: string): void {
+  const ts = new Date().toISOString();
+  process.stderr.write(JSON.stringify({ ts, level: "info", component: "main", msg }) + "\n");
+}
