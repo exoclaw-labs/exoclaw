@@ -15,7 +15,7 @@
  * sections of CLAUDE.md are preserved across refreshes.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 
 const WS = join(process.env.HOME || "/home/agent", "workspace");
@@ -39,7 +39,6 @@ function existingFiles(): string[] {
 function hasDailyNotes(): boolean {
   try {
     const memDir = join(WS, "memory");
-    const { readdirSync } = require("fs");
     return readdirSync(memDir).some((f: string) => f.match(/^\d{4}-\d{2}-\d{2}\.md$/));
   } catch { return false; }
 }

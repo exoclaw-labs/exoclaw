@@ -63,7 +63,7 @@ export class AuditLogger {
         INSERT INTO audit_log (event_type, detail, source, severity)
         VALUES (?, ?, ?, ?)
       `).run(event.event_type, event.detail, event.source || null, event.severity || "info");
-    } catch {} // Never let audit logging crash the gateway
+    } catch { /* Never let audit logging crash the gateway */ }
   }
 
   query(filters: {

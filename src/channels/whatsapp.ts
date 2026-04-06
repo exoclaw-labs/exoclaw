@@ -17,7 +17,6 @@
  *   4. Subscribe to "messages" webhook field
  */
 
-import { createHmac } from "crypto";
 import type { Context } from "hono";
 import type { Claude } from "../claude.js";
 import { scanForLeaks } from "../content-scanner.js";
@@ -145,7 +144,7 @@ async function sendReadReceipt(messageId: string): Promise<void> {
         message_id: messageId,
       }),
     });
-  } catch {}
+  } catch { /* intentional */ }
 }
 
 function splitMsg(text: string, max: number): string[] {

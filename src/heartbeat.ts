@@ -12,7 +12,7 @@
  * the heartbeat prompt every 30 minutes.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { CronScheduler } from "./cron.js";
 

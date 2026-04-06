@@ -192,7 +192,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       const formatted = Array.from(grouped.entries())
-        .map(([_id, g]) => {
+        .map(([, g]) => {
           const header = `## Session: ${g.title || "Untitled"} (${g.date})`;
           return `${header}\n${g.messages.join("\n")}`;
         })

@@ -13,7 +13,7 @@
  */
 
 import { spawn } from "child_process";
-import { readFileSync, readdirSync, statSync, openSync, readSync, closeSync, existsSync } from "fs";
+import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { scanContent } from "./content-scanner.js";
 import { PROJECT_DIR_SUFFIX } from "./constants.js";
@@ -103,7 +103,7 @@ export class BackgroundReviewer {
 
   private emit(event: ReviewEvent): void {
     for (const listener of this.listeners) {
-      try { listener(event); } catch {}
+      try { listener(event); } catch { /* intentional */ }
     }
   }
 
@@ -188,7 +188,7 @@ export class BackgroundReviewer {
               this.emit({ type: "review_error", detail: `Blocked suspicious write to ${change.name}: ${scan.reason}` });
               continue;
             }
-          } catch {}
+          } catch { /* intentional */ }
         }
 
         // Emit events for changes
@@ -332,10 +332,10 @@ export class BackgroundReviewer {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const skillPath = join(skillsDir, entry.name, "SKILL.md");
-          try { snapshot.set(skillPath, readFileSync(skillPath, "utf-8")); } catch {}
+          try { snapshot.set(skillPath, readFileSync(skillPath, "utf-8")); } catch { /* intentional */ }
         }
       }
-    } catch {}
+    } catch { /* intentional */ }
 
     return snapshot;
   }
@@ -359,10 +359,10 @@ export class BackgroundReviewer {
             if (!before.has(skillPath)) {
               after.set(skillPath, content);
             }
-          } catch {}
+          } catch { /* intentional */ }
         }
       }
-    } catch {}
+    } catch { /* intentional */ }
 
     // Check memory/config files that might have been created
     for (const name of ["MEMORY.md", "USER.md"]) {
@@ -371,7 +371,7 @@ export class BackgroundReviewer {
         try {
           const content = readFileSync(path, "utf-8");
           if (content) after.set(path, content);
-        } catch {}
+        } catch { /* intentional */ }
       }
     }
 

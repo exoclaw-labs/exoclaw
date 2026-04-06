@@ -9,7 +9,7 @@
  * Inspired by OpenClaw's daily memory files.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "fs";
+import { readFileSync, mkdirSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
 
 const WS = join(process.env.HOME || "/home/agent", "workspace");
@@ -82,14 +82,13 @@ export function pruneDailyNotes(retentionDays = 90): number {
   const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString().slice(0, 10);
   let pruned = 0;
   try {
-    const { rmSync } = require("fs");
     for (const f of readdirSync(MEMORY_DIR)) {
       if (f.match(/^\d{4}-\d{2}-\d{2}\.md$/) && f.replace(".md", "") < cutoff) {
         rmSync(join(MEMORY_DIR, f));
         pruned++;
       }
     }
-  } catch {}
+  } catch { /* intentional */ }
   return pruned;
 }
 

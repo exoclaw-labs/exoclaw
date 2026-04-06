@@ -49,7 +49,6 @@ export function createApproval(
   };
 
   // Cleanup expired entries before adding new ones
-  const now = Date.now();
   for (const [key, entry] of pendingApprovals) {
     if (entry.request.status !== "pending") {
       pendingApprovals.delete(key);

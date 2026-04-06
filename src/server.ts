@@ -19,7 +19,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { Claude, type ClaudeConfig, type McpServerDef } from "./claude.js";
+import { Claude, type ClaudeConfig } from "./claude.js";
 import { handleSlackEvent, startSlack } from "./channels/slack.js";
 import { loadConfig, loadConfigMasked, saveConfig, saveConfigSafe } from "./config-store.js";
 import { SessionDB } from "./session-db.js";
@@ -31,10 +31,10 @@ import { CronScheduler, type CronConfig } from "./cron.js";
 import { AuditLogger } from "./audit.js";
 import { RateLimiter, type RateLimitConfig } from "./rate-limit.js";
 import { Estop } from "./estop.js";
-import { ensureMemoryDir, listDailyNotes, generateDailyNotesContext, pruneDailyNotes } from "./daily-notes.js";
+import { ensureMemoryDir, listDailyNotes, pruneDailyNotes } from "./daily-notes.js";
 import { ensureHeartbeatFile, seedHeartbeatJob, isHeartbeatAlert } from "./heartbeat.js";
 import { seedDreamingJob, getDreamingPrompt } from "./dreaming.js";
-import { createApproval, resolveApproval, listPendingApprovals, formatApprovalMessage } from "./approvals.js";
+import { resolveApproval, listPendingApprovals } from "./approvals.js";
 import { EmbeddingStore, type EmbeddingConfig } from "./embeddings.js";
 import { startWhatsApp, handleWhatsAppVerify, handleWhatsAppEvent } from "./channels/whatsapp.js";
 import { syncClaudeMd } from "./claude-md.js";
@@ -61,11 +61,6 @@ const StatusResponse = z.object({
 const WebhookBody = z.object({
   message: z.string().min(1).openapi({ description: "Prompt text" }),
 }).openapi("WebhookRequest");
-
-const ErrorResponse = z.object({
-  error: z.string(),
-  detail: z.string().optional(),
-}).openapi("ErrorResponse");
 
 // ── OpenAPI route defs ──
 
@@ -390,7 +385,7 @@ export function createApp(config: GatewayConfig) {
 
       // Re-sync CLAUDE.md after any workspace file change so companion references stay current
       if (name === "CLAUDE.md" || name.endsWith(".md")) {
-        try { syncClaudeMd(); } catch {}
+        try { syncClaudeMd(); } catch { /* intentional */ }
       }
 
       return c.json({ status: "ok", file: name });
@@ -421,12 +416,12 @@ export function createApp(config: GatewayConfig) {
             try {
               mkdirSync(dst, { recursive: true });
               writeFileSync(join(dst, "SKILL.md"), readFileSync(src, "utf-8"));
-            } catch {}
+            } catch { /* intentional */ }
           }
         }
-      } catch {} // default-skills dir may not exist outside Docker
+      } catch { /* default-skills dir may not exist outside Docker */ }
     }
-  } catch {}
+  } catch { /* intentional */ }
 
   app.get("/api/skills", (c) => {
     try {
@@ -437,7 +432,7 @@ export function createApp(config: GatewayConfig) {
         .map(e => {
           const skillPath = join(skillsDir, e.name, "SKILL.md");
           let content = "";
-          try { content = readFileSync(skillPath, "utf-8"); } catch {}
+          try { content = readFileSync(skillPath, "utf-8"); } catch { /* intentional */ }
           return { name: e.name, content, path: skillPath };
         });
       return c.json({ skills });
@@ -883,7 +878,7 @@ export function createApp(config: GatewayConfig) {
   syncClaudeMd();
 
   // Refresh daily notes in CLAUDE.md every hour (notes change throughout the day)
-  setInterval(() => { try { syncClaudeMd(); } catch {} }, 60 * 60_000);
+  setInterval(() => { try { syncClaudeMd(); } catch { /* intentional */ } }, 60 * 60_000);
 
   // Seed default heartbeat + dreaming cron jobs
   seedHeartbeatJob(scheduler);
@@ -993,57 +988,3 @@ function log(level: string, msg: string): void {
   process.stderr.write(JSON.stringify({ ts, level, component: "server", msg }) + "\n");
 }
 
-function parsePaneToMessages(pane: string): { role: string; content: string }[] {
-  const messages: { role: string; content: string }[] = [];
-  const lines = pane.split("\n");
-
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // User message: starts with ❯
-    if (line.match(/^❯\s+\S/)) {
-      const text = line.replace(/^❯\s+/, "").trim();
-      if (text) messages.push({ role: "user", content: text });
-      i++;
-      continue;
-    }
-
-    // Assistant message: starts with ●
-    if (line.match(/^●\s/)) {
-      const contentLines: string[] = [];
-      // First line after ●
-      contentLines.push(line.replace(/^●\s*/, ""));
-      i++;
-      // Continuation lines: indented with spaces, until next ❯ or ● or ─── line
-      while (i < lines.length) {
-        const next = lines[i];
-        if (next.match(/^[❯●]/) || next.match(/^[─━]+$/)) break;
-        // Strip leading indentation (Claude indents continuation with 2 spaces)
-        contentLines.push(next.replace(/^  /, ""));
-        i++;
-      }
-      const content = contentLines.join("\n").trim()
-        // Strip TUI noise
-        .split("\n")
-        .filter(l =>
-          !l.match(/^[─━╭╰│╮╯┌└├┤]+\s*$/) &&
-          !l.match(/^\s*\? for shortcu/) &&
-          !l.match(/Remote Control/) &&
-          !l.match(/^\s*[·•]\s+\S+…/) &&
-          !l.match(/\(thinking\)\s*$/) &&
-          !l.match(/^\s*⏵⏵/) &&
-          !l.match(/^\s*⎿\s+Tip:/) &&
-          !l.match(/^\s*[✽⎿]\s*(Undulating|Seasoning|Tip:|Use \/)/)
-        )
-        .join("\n")
-        .trim();
-      if (content) messages.push({ role: "assistant", content });
-      continue;
-    }
-
-    i++;
-  }
-
-  return messages;
-}

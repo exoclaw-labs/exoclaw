@@ -15,7 +15,7 @@ if (config.name && config.claude) {
   config.claude.name = config.name;
 }
 
-const { app, claude, sessionDb, sessionIndexer, reviewer, scheduler, rateLimiter, estop } = createApp(config);
+const { app, claude, sessionDb, sessionIndexer, scheduler, rateLimiter, estop } = createApp(config);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
   log(`"${config.name}" listening on http://${info.address}:${info.port}`);

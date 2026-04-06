@@ -10,8 +10,7 @@
  * context about what's worth keeping long-term.
  */
 
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync } from "fs";
 import { listDailyNotes } from "./daily-notes.js";
 import type { CronScheduler } from "./cron.js";
 

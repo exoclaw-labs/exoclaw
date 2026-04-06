@@ -16,7 +16,6 @@
  */
 
 import { spawn } from "child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import Database from "better-sqlite3";
 
@@ -341,7 +340,7 @@ export class CronScheduler {
       const run: CronRun = { id: runId, job_id: job.id, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), status, result };
 
       for (const listener of this.listeners) {
-        try { listener(updatedJob, run); } catch {}
+        try { listener(updatedJob, run); } catch { /* intentional */ }
       }
 
       log("info", `Cron job ${job.name} completed: ${status}`);

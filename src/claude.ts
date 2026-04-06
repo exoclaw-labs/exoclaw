@@ -288,7 +288,7 @@ export class Claude {
           writeFileSync(this.sessionFilePath, match[0]);
           log("info", `Saved session ID: ${match[0]}`);
         }
-      } catch {}
+      } catch { /* intentional */ }
     }, 15000); // Wait for session to fully start
   }
 
@@ -388,7 +388,7 @@ export class Claude {
     } finally {
       this._busy = false;
       // Notify background reviewer that a turn completed
-      try { this.onTurnComplete?.(); } catch {}
+      try { this.onTurnComplete?.(); } catch { /* intentional */ }
     }
   }
 
@@ -470,6 +470,7 @@ export class Claude {
       const promptEcho = `❯ ${prompt}`;
       const echoIdx = pane.lastIndexOf(promptEcho);
 
+      let afterEcho!: string;
       if (echoIdx === -1) {
         // Prompt might have been truncated by tmux or wrapped — try shorter match
         const shortPrompt = `❯ ${prompt.slice(0, 40)}`;
@@ -483,9 +484,9 @@ export class Claude {
         }
         // Use short match — find end of line
         const lineEnd = pane.indexOf("\n", shortIdx);
-        var afterEcho = pane.slice(lineEnd !== -1 ? lineEnd : shortIdx + shortPrompt.length);
+        afterEcho = pane.slice(lineEnd !== -1 ? lineEnd : shortIdx + shortPrompt.length);
       } else {
-        var afterEcho = pane.slice(echoIdx + promptEcho.length);
+        afterEcho = pane.slice(echoIdx + promptEcho.length);
       }
 
       // Extract everything between the prompt echo and the next idle prompt
@@ -558,7 +559,7 @@ export class Claude {
         .map(f => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime);
       if (files.length > 0) sessionFile = join(projectDir, files[0].name);
-    } catch {}
+    } catch { /* intentional */ }
 
     if (!sessionFile) {
       log("warn", "No session file found, falling back to tmux");
@@ -568,7 +569,7 @@ export class Claude {
 
     // Record current file size (we only want new lines)
     let fileSize = 0;
-    try { fileSize = statSync(sessionFile).size; } catch {}
+    try { fileSize = statSync(sessionFile).size; } catch { /* intentional */ }
 
     // Send the prompt to tmux
     this.sendKeys(prompt);
@@ -582,7 +583,7 @@ export class Claude {
       await sleep(POLL_INTERVAL_MS);
 
       // Read new content from the file
-      let newContent = "";
+      let newContent: string;
       try {
         const currentSize = statSync(sessionFile).size;
         if (currentSize <= fileSize) continue;
@@ -732,7 +733,7 @@ export class Claude {
     const enabledServers: Record<string, any> = {};
     for (const [name, def] of Object.entries(servers)) {
       if (def.enabled === false) continue;
-      const { enabled, ...rest } = def;
+      const rest = Object.fromEntries(Object.entries(def).filter(([k]) => k !== "enabled"));
       enabledServers[name] = rest;
     }
 
