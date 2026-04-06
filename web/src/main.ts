@@ -7,6 +7,7 @@ import Dashboard from "./views/Dashboard.vue";
 import Chat from "./views/Chat.vue";
 import Config from "./views/Config.vue";
 import Console from "./views/Console.vue";
+import Agents from "./views/Agents.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -14,6 +15,7 @@ const router = createRouter({
     { path: "/", redirect: "/dashboard" },
     { path: "/dashboard", component: Dashboard, meta: { title: "Dashboard" } },
     { path: "/chat", component: Chat, meta: { title: "Agent Chat" } },
+    { path: "/agents", component: Agents, meta: { title: "Agents" } },
     { path: "/config/:section?", component: Config, meta: { title: "Configuration" } },
     { path: "/console", component: Console, meta: { title: "Console" } },
   ],

@@ -933,6 +933,72 @@ export function createApp(config: GatewayConfig) {
     return c.json({ results, vector_enabled: embeddingStore.isEnabled });
   });
 
+  // ── Agents API (Claude.ai scheduled triggers) ──
+
+  app.get("/api/agents", async (c) => {
+    try {
+      const cfg = loadConfig();
+      const token: string | undefined =
+        cfg.claudeApiToken || process.env.CLAUDE_API_TOKEN;
+
+      if (!token) {
+        return c.json({ triggers: [], unconfigured: true });
+      }
+
+      const res = await fetch("https://claude.ai/api/v1/code/triggers", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!res.ok) {
+        log("warn", `Claude.ai triggers API returned ${res.status}`);
+        return c.json({ triggers: [], error: `upstream_${res.status}` });
+      }
+
+      const data = await res.json() as { triggers?: unknown[] };
+      return c.json({ triggers: data.triggers ?? data ?? [] });
+    } catch (err) {
+      log("warn", `Failed to fetch triggers: ${err}`);
+      return c.json({ triggers: [], error: "fetch_failed" });
+    }
+  });
+
+  app.post("/api/agents/:id/run", async (c) => {
+    try {
+      const id = c.req.param("id");
+      const cfg = loadConfig();
+      const token: string | undefined =
+        cfg.claudeApiToken || process.env.CLAUDE_API_TOKEN;
+
+      if (!token) {
+        return c.json({ error: "unconfigured", detail: "claudeApiToken not set" }, 400);
+      }
+
+      const res = await fetch(`https://claude.ai/api/v1/code/triggers/${encodeURIComponent(id)}/run`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        log("warn", `Trigger run ${id} returned ${res.status}: ${body}`);
+        return c.json({ error: `upstream_${res.status}`, detail: body }, 502);
+      }
+
+      const result = await res.json().catch(() => ({ status: "ok" }));
+      audit.log({ event_type: "cron_run", detail: `Manual trigger run: ${id}`, source: "api" });
+      return c.json(result);
+    } catch (err) {
+      log("error", `Trigger run failed: ${err}`);
+      return c.json({ error: "fetch_failed", detail: String(err) }, 500);
+    }
+  });
+
   // ── Approvals API ──
 
   app.get("/api/approvals", (c) => {

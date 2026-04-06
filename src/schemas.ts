@@ -79,6 +79,7 @@ export const GatewayConfigSchema = z.object({
   port: z.number().int().positive(),
   host: z.string().min(1),
   apiToken: z.string().optional(),
+  claudeApiToken: z.string().optional(),
   setupComplete: z.boolean().optional(),
   browserTool: z.enum(["gologin", "browser-use", "agent-browser", "none"]).optional(),
   claude: ClaudeConfigSchema,

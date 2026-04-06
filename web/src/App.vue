@@ -59,6 +59,7 @@ function setTheme(id: string) {
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: "bi-speedometer2" },
   { to: "/chat", label: "Chat", icon: "bi-chat-dots" },
+  { to: "/agents", label: "Agents", icon: "bi-robot" },
   { to: "/console", label: "Console", icon: "bi-terminal" },
 ];
 
