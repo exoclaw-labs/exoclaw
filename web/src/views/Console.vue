@@ -37,9 +37,16 @@ async function sendText() {
   await sendKeys(`"${text.replace(/"/g, '\\"')}" Enter`);
 }
 
+// Focus input on any keypress in the window
+function onKeydown(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.activeElement === inputEl.value) return;
+  inputEl.value?.focus();
+}
+
 watch(pane, scrollBottom);
-onMounted(() => { loadPane(); timer = setInterval(loadPane, 2000); });
-onUnmounted(() => clearInterval(timer));
+onMounted(() => { loadPane(); timer = setInterval(loadPane, 2000); window.addEventListener("keydown", onKeydown); });
+onUnmounted(() => { clearInterval(timer); window.removeEventListener("keydown", onKeydown); });
 </script>
 
 <template>

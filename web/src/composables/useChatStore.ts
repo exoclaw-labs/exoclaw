@@ -74,10 +74,10 @@ function connect() {
 
 function send(text: string) {
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-  state.busy = true;
-  current = "";
   state.messages.push({ role: "user", content: text });
   ws.send(JSON.stringify({ type: "message", content: text }));
+  state.busy = true;
+  current = "";
 }
 
 export function useChatStore() {
