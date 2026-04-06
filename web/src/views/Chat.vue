@@ -6,7 +6,7 @@ import { useChatStore } from "../composables/useChatStore";
 const { state, send } = useChatStore();
 const input = ref("");
 const scrollEl = ref<HTMLElement | null>(null);
-const inputEl = ref<HTMLInputElement | null>(null);
+const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 function scrollBottom() {
   nextTick(() => { if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight; });
@@ -16,31 +16,46 @@ function renderMd(text: string): string {
   return marked.parse(text, { async: false }) as string;
 }
 
+function autoResize() {
+  const el = inputEl.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 200) + "px";
+}
+
 function handleSend() {
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
+  nextTick(autoResize);
   send(text);
   scrollBottom();
   nextTick(() => inputEl.value?.focus());
 }
 
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    handleSend();
+  }
+}
+
 function copyText(text: string) { navigator.clipboard.writeText(text); }
 
-// Focus input on any keypress in the window
-function onKeydown(e: KeyboardEvent) {
+// Focus input on any keypress in the window (skip if modifier key)
+function onWindowKeydown(e: KeyboardEvent) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (document.activeElement === inputEl.value) return;
   inputEl.value?.focus();
 }
 
 // Scroll to bottom on mount and when messages change
-onMounted(() => { scrollBottom(); window.addEventListener("keydown", onKeydown); });
-onUnmounted(() => window.removeEventListener("keydown", onKeydown));
+onMounted(() => { scrollBottom(); window.addEventListener("keydown", onWindowKeydown); });
+onUnmounted(() => window.removeEventListener("keydown", onWindowKeydown));
 watch(() => state.messages.length, scrollBottom);
 watch(() => state.messages[state.messages.length - 1]?.content, scrollBottom);
 
-// Refocus input when busy clears (input was disabled during response)
+// Refocus input when busy clears
 watch(() => state.busy, (busy) => { if (!busy) nextTick(() => inputEl.value?.focus()); });
 </script>
 
@@ -96,9 +111,20 @@ watch(() => state.busy, (busy) => { if (!busy) nextTick(() => inputEl.value?.foc
     </div>
 
     <!-- Input -->
-    <form @submit.prevent="handleSend" class="p-3 border-top d-flex gap-2">
-      <input ref="inputEl" v-model="input" :disabled="!state.connected" placeholder="Send a message..." autofocus class="form-control" />
-      <button type="submit" class="btn btn-primary" :disabled="!state.connected || !input.trim()">
+    <form @submit.prevent="handleSend" class="p-3 border-top d-flex gap-2 align-items-end">
+      <textarea
+        ref="inputEl"
+        v-model="input"
+        :disabled="!state.connected"
+        placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
+        autofocus
+        rows="1"
+        class="form-control"
+        style="resize:none;overflow-y:hidden"
+        @keydown="handleKeydown"
+        @input="autoResize"
+      ></textarea>
+      <button type="submit" class="btn btn-primary flex-shrink-0" :disabled="!state.connected || !input.trim()">
         <i class="bi bi-send"></i>
       </button>
     </form>

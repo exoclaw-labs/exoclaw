@@ -5,7 +5,7 @@ const pane = ref("");
 const input = ref("");
 const busy = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
-const inputEl = ref<HTMLInputElement | null>(null);
+const inputEl = ref<HTMLTextAreaElement | null>(null);
 let timer: ReturnType<typeof setInterval>;
 
 function scrollBottom() {
@@ -30,11 +30,26 @@ async function sendKeys(keys: string) {
   nextTick(() => inputEl.value?.focus());
 }
 
+function autoResize() {
+  const el = inputEl.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 200) + "px";
+}
+
 async function sendText() {
   const text = input.value;
   if (!text) return;
   input.value = "";
+  nextTick(autoResize);
   await sendKeys(`"${text.replace(/"/g, '\\"')}" Enter`);
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendText();
+  }
 }
 
 // Focus input on any keypress in the window
@@ -58,8 +73,18 @@ onUnmounted(() => { clearInterval(timer); window.removeEventListener("keydown", 
 
     <!-- Input -->
     <div class="p-3 border-top">
-      <form @submit.prevent="sendText" class="input-group input-group-sm mb-2">
-        <input ref="inputEl" v-model="input" class="form-control font-monospace" placeholder="Send text..." :disabled="busy" />
+      <form @submit.prevent="sendText" class="input-group input-group-sm mb-2 align-items-end">
+        <textarea
+          ref="inputEl"
+          v-model="input"
+          class="form-control font-monospace"
+          placeholder="Send text… (Enter to send, Shift+Enter for newline)"
+          :disabled="busy"
+          rows="1"
+          style="resize:none;overflow-y:hidden"
+          @keydown="handleKeydown"
+          @input="autoResize"
+        ></textarea>
         <button class="btn btn-primary" type="submit" :disabled="busy || !input">Send</button>
       </form>
       <div class="d-flex flex-wrap gap-1">
