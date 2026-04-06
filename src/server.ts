@@ -880,7 +880,7 @@ export function createApp(config: GatewayConfig) {
   // Refresh daily notes in CLAUDE.md every hour (notes change throughout the day)
   setInterval(() => { try { syncClaudeMd(); } catch { /* intentional */ } }, 60 * 60_000);
 
-  // Seed default heartbeat + dreaming cron jobs
+  // Seed default cron jobs
   seedHeartbeatJob(scheduler);
   seedDreamingJob(scheduler);
 
