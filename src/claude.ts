@@ -66,6 +66,9 @@ function isTuiNoise(l: string): boolean {
   if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return true;
   if (/Claude Code v\d/.test(t)) return true; // version banner
   if (/·\s*Claude\s+(Max|Pro|Free)/i.test(t)) return true; // "Sonnet 4.6 · Claude Max"
+  if (/tmux detected/i.test(t)) return true;
+  if (/PgUp\/PgDn/.test(t)) return true;
+  if (/~\/\.tmux\.conf/.test(t)) return true;
   return false;
 }
 
