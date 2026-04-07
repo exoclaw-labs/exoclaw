@@ -32,9 +32,13 @@ async function poll(claude: Claude): Promise<void> {
       const data = (await res.json()) as { ok: boolean; result: any[] };
       if (!data.ok) { await sleep(5000); continue; }
 
+      if (data.result.length) log("debug", `Got ${data.result.length} updates`);
       for (const u of data.result) {
         offset = u.update_id + 1;
-        if (u.message?.text) handleMessage(u.message, claude).catch((e) => log("error", `${e}`));
+        if (u.message?.text) {
+          log("info", `Message from ${u.message.chat.id}: "${u.message.text.slice(0, 50)}"`);
+          handleMessage(u.message, claude).catch((e) => log("error", `handleMessage: ${e}`));
+        }
       }
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "TimeoutError")) {
@@ -57,7 +61,9 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
       body: JSON.stringify({ chat_id: chatId, action: "typing" }),
     });
 
+    log("debug", `Calling sendAndWait for: "${prompt.slice(0, 50)}"`);
     let response = await claude.sendAndWait(prompt);
+    log("debug", `sendAndWait returned: "${(response || "").slice(0, 100)}"`);
 
     // Scan for credential leaks before sending
     const { scanForLeaks } = await import("../content-scanner.js");
