@@ -133,10 +133,6 @@ export function syncClaudeMd(): void {
   }
 }
 
-export function refreshDailyNotes(): void {
-  syncClaudeMd();
-}
-
 function log(level: string, msg: string): void {
   const ts = new Date().toISOString();
   process.stderr.write(JSON.stringify({ ts, level, component: "claude-md", msg }) + "\n");

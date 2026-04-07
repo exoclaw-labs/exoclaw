@@ -14,11 +14,15 @@ const state = reactive({
   connected: false,
   sessionId: null as string | null,
   historyLoaded: false,
+  // Live status from the agent (polled)
+  agentBusy: false,
+  agentAlive: false,
 });
 
 let ws: WebSocket | null = null;
 let current = "";
 let initialized = false;
+let statusTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadHistory() {
   if (state.historyLoaded) return;
@@ -29,6 +33,15 @@ async function loadHistory() {
       state.messages = messages;
     }
     state.historyLoaded = true;
+  } catch { /* ignore */ }
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch("/api/status");
+    const data = await res.json();
+    state.agentAlive = data.session?.alive ?? false;
+    state.agentBusy = data.session?.busy ?? false;
   } catch { /* ignore */ }
 }
 
@@ -53,11 +66,18 @@ function connect() {
           else state.messages.push({ role: "assistant", content: current }); }
         break;
       case "thinking":
-        state.messages.push({ role: "thinking", content: m.content }); break;
+        state.messages.push({ role: "thinking", content: m.content });
+        break;
       case "tool_call":
-        state.messages.push({ role: "tool", content: JSON.stringify(m.args, null, 2), toolName: m.name }); break;
+        state.messages.push({
+          role: "tool",
+          content: typeof m.args === "string" ? m.args : JSON.stringify(m.args, null, 2),
+          toolName: m.name,
+        });
+        break;
       case "tool_result":
-        state.messages.push({ role: "tool", content: m.output, toolName: m.name }); break;
+        state.messages.push({ role: "tool", content: m.output, toolName: m.name });
+        break;
       case "done":
         if (!current && m.full_response) state.messages.push({ role: "assistant", content: m.full_response });
         current = "";
@@ -85,6 +105,9 @@ export function useChatStore() {
     initialized = true;
     loadHistory();
     connect();
+    // Poll agent status every 3s for real-time busy/alive state
+    pollStatus();
+    statusTimer = setInterval(pollStatus, 3000);
   }
 
   return { state, send, loadHistory };

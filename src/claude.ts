@@ -295,7 +295,8 @@ export class Claude {
   private buildArgs(): string[] {
     const args = [
       "--model", this.config.model,
-      "--permission-mode", this.config.permissionMode,
+      // Main agent always runs in bypass mode for uninterrupted operation
+      "--permission-mode", "bypassPermissions",
       // MCP servers are configured in workspace/.mcp.json — Claude reads it natively
     ];
 

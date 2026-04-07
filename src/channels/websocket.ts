@@ -96,8 +96,14 @@ export function setupWebSocket(server: Server, claude: Claude, apiToken?: string
           if (event.type === "chunk") {
             fullResponse += event.content;
             ws.send(JSON.stringify({ type: "chunk", content: event.content }));
+          } else if (event.type === "thinking") {
+            ws.send(JSON.stringify({ type: "thinking", content: event.content }));
           } else if (event.type === "tool") {
-            ws.send(JSON.stringify({ type: "tool_call", name: event.content, args: {} }));
+            // event.content is "toolName: {json}" — split into name + args
+            const colonIdx = event.content.indexOf(":");
+            const toolName = colonIdx > 0 ? event.content.slice(0, colonIdx).trim() : event.content;
+            const toolArgs = colonIdx > 0 ? event.content.slice(colonIdx + 1).trim() : "{}";
+            ws.send(JSON.stringify({ type: "tool_call", name: toolName, args: toolArgs }));
           } else if (event.type === "done") {
             fullResponse = event.content || fullResponse;
             const leak = scanForLeaks(fullResponse);

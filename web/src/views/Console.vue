@@ -1,100 +1,108 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, nextTick } from "vue";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
-const pane = ref("");
-const input = ref("");
-const busy = ref(false);
-const scrollEl = ref<HTMLElement | null>(null);
-const inputEl = ref<HTMLTextAreaElement | null>(null);
-let timer: ReturnType<typeof setInterval>;
+const containerEl = ref<HTMLElement | null>(null);
+const connected = ref(false);
 
-function scrollBottom() {
-  nextTick(() => { if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight; });
+let term: Terminal | null = null;
+let fitAddon: FitAddon | null = null;
+let ws: WebSocket | null = null;
+let resizeObserver: ResizeObserver | null = null;
+
+function getThemeColors(): Record<string, string> {
+  const style = getComputedStyle(document.documentElement);
+  const bg = style.getPropertyValue("--bs-body-bg").trim() || "#0b0b14";
+  const fg = style.getPropertyValue("--bs-body-color").trim() || "#d4d4dc";
+  const cursor = style.getPropertyValue("--bs-primary").trim() || "#7c3aed";
+  return { bg, fg, cursor };
 }
 
-async function loadPane() {
-  try { pane.value = (await (await fetch("/api/session/pane")).json()).content || ""; }
-  catch {}
+function termWsUrl(): string {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}/ws/terminal`;
 }
 
-async function sendKeys(keys: string) {
-  busy.value = true;
-  await fetch("/api/session/keys", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ keys }),
+function connect() {
+  if (!containerEl.value) return;
+  const colors = getThemeColors();
+
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
+    theme: { background: colors.bg, foreground: colors.fg, cursor: colors.cursor, selectionBackground: colors.cursor + "44" },
+    allowTransparency: true,
+    scrollback: 5000,
   });
-  await new Promise(r => setTimeout(r, 500));
-  await loadPane();
-  busy.value = false;
-  nextTick(() => inputEl.value?.focus());
+
+  fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(containerEl.value);
+  nextTick(() => { fitAddon?.fit(); });
+
+  ws = new WebSocket(termWsUrl());
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    connected.value = true;
+    term?.focus();
+    if (term) ws?.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onclose = () => { connected.value = false; term?.write("\r\n\x1b[31m[Disconnected]\x1b[0m\r\n"); };
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer) term?.write(new Uint8Array(ev.data));
+    else term?.write(ev.data);
+  };
+
+  term.onData((data) => { if (ws?.readyState === WebSocket.OPEN) ws.send(data); });
+  term.onResize(({ cols, rows }) => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols, rows })); });
+
+  resizeObserver = new ResizeObserver(() => { fitAddon?.fit(); });
+  resizeObserver.observe(containerEl.value);
 }
 
-function autoResize() {
-  const el = inputEl.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 200) + "px";
+function reconnect() {
+  ws?.close(); term?.dispose();
+  if (resizeObserver && containerEl.value) resizeObserver.unobserve(containerEl.value);
+  connect();
 }
 
-async function sendText() {
-  const text = input.value;
-  if (!text) return;
-  input.value = "";
-  nextTick(autoResize);
-  await sendKeys(`"${text.replace(/"/g, '\\"')}" Enter`);
-}
-
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendText();
-  }
-}
-
-// Focus input on any keypress in the window
-function onKeydown(e: KeyboardEvent) {
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (document.activeElement === inputEl.value) return;
-  inputEl.value?.focus();
-}
-
-watch(pane, scrollBottom);
-onMounted(() => { loadPane(); timer = setInterval(loadPane, 2000); window.addEventListener("keydown", onKeydown); });
-onUnmounted(() => { clearInterval(timer); window.removeEventListener("keydown", onKeydown); });
+onMounted(() => { nextTick(connect); });
+onUnmounted(() => { ws?.close(); term?.dispose(); resizeObserver?.disconnect(); });
 </script>
 
 <template>
-  <div class="d-flex flex-column h-100">
-    <!-- Pane -->
-    <div ref="scrollEl" class="flex-grow-1 overflow-auto p-0" style="min-height:0">
-      <pre class="p-3 mb-0 small" style="white-space:pre-wrap">{{ pane || 'Loading...' }}</pre>
-    </div>
-
-    <!-- Input -->
-    <div class="p-3 border-top">
-      <form @submit.prevent="sendText" class="input-group input-group-sm mb-2 align-items-end">
-        <textarea
-          ref="inputEl"
-          v-model="input"
-          class="form-control font-monospace"
-          placeholder="Send text… (Enter to send, Shift+Enter for newline)"
-          :disabled="busy"
-          rows="1"
-          style="resize:none;overflow-y:hidden"
-          @keydown="handleKeydown"
-          @input="autoResize"
-        ></textarea>
-        <button class="btn btn-primary" type="submit" :disabled="busy || !input">Send</button>
-      </form>
-      <div class="d-flex flex-wrap gap-1">
-        <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sendKeys('Enter')">Enter</button>
-        <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sendKeys('Up')"><i class="bi bi-arrow-up"></i></button>
-        <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sendKeys('Down')"><i class="bi bi-arrow-down"></i></button>
-        <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sendKeys('Escape')">Esc</button>
-        <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sendKeys('Tab')">Tab</button>
-        <button class="btn btn-sm btn-outline-secondary" @click="loadPane"><i class="bi bi-arrow-clockwise"></i></button>
+  <div class="terminal-page d-flex flex-column h-100">
+    <div class="terminal-header">
+      <div class="d-flex align-items-center gap-2">
+        <i class="bi bi-terminal" style="font-size:14px"></i>
+        <span class="fw-semibold" style="font-size:12px">Terminal</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <span class="status-dot" :class="connected ? 'connected' : 'disconnected'"></span>
+        <button class="header-btn" @click="reconnect" title="Reconnect"><i class="bi bi-arrow-clockwise"></i></button>
       </div>
     </div>
+    <div ref="containerEl" class="terminal-container"></div>
   </div>
 </template>
+
+<style scoped>
+.terminal-page { background: var(--bs-body-bg); }
+.terminal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid var(--bs-border-color);
+  background: var(--bs-tertiary-bg); color: var(--bs-body-color);
+}
+.header-btn { background: none; border: none; color: var(--bs-tertiary-color); font-size: 12px; padding: 2px 6px; cursor: pointer; border-radius: 3px; }
+.header-btn:hover { color: var(--bs-secondary-color); background: var(--bs-secondary-bg); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.status-dot.connected { background: var(--bs-success); }
+.status-dot.disconnected { background: var(--bs-danger); }
+.terminal-container { flex: 1; min-height: 0; padding: 4px; }
+.terminal-container :deep(.xterm) { height: 100%; }
+.terminal-container :deep(.xterm-viewport) { overflow-y: auto !important; }
+</style>

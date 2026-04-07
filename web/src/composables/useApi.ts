@@ -2,10 +2,6 @@ export async function fetchStatus() {
   return (await fetch("/api/status")).json();
 }
 
-export async function fetchHealth() {
-  return (await fetch("/health")).json();
-}
-
 export async function fetchConfig() {
   return (await fetch("/api/config")).json();
 }

@@ -109,17 +109,3 @@ export function resolveApproval(id: string, approved: boolean, resolvedBy = "use
 export function listPendingApprovals(): ApprovalRequest[] {
   return Array.from(pendingApprovals.values()).map(e => e.request);
 }
-
-/** Format an approval request for display in a channel message. */
-export function formatApprovalMessage(request: ApprovalRequest): string {
-  const risk = { low: "Low", medium: "Medium", high: "HIGH", critical: "CRITICAL" }[request.risk_level];
-  return [
-    `**Approval Required** [${risk} Risk]`,
-    "",
-    `**Action:** ${request.action}`,
-    request.detail ? `**Details:** ${request.detail}` : "",
-    "",
-    `Approval ID: \`${request.id}\``,
-    `Reply with "approve ${request.id}" or "deny ${request.id}"`,
-  ].filter(Boolean).join("\n");
-}

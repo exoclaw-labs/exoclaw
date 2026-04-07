@@ -58,13 +58,12 @@ function setTheme(id: string) {
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: "bi-speedometer2" },
-  { to: "/chat", label: "Chat", icon: "bi-chat-dots" },
-  { to: "/console", label: "Console", icon: "bi-terminal" },
+  { to: "/code", label: "Code", icon: "bi-braces" },
+  { to: "/console", label: "Terminal", icon: "bi-terminal" },
 ];
 
 const configSections = [
   { to: "/config", label: "Setup", icon: "bi-key" },
-  { to: "/config/general", label: "General", icon: "bi-sliders" },
   { to: "/config/agents", label: "Agents", icon: "bi-robot" },
   { to: "/config/channels", label: "Channels", icon: "bi-broadcast" },
   { to: "/config/skills", label: "Skills", icon: "bi-lightning" },

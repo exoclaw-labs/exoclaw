@@ -7,6 +7,7 @@ import { createApp, type GatewayConfig } from "./server.js";
 import { startDiscord } from "./channels/discord.js";
 import { startTelegram } from "./channels/telegram.js";
 import { setupWebSocket } from "./channels/websocket.js";
+import { setupTerminal } from "./channels/terminal.js";
 
 const config = loadConfig() as GatewayConfig;
 
@@ -24,6 +25,7 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.hos
 if (config.channels.discord?.enabled) startDiscord(claude);
 if (config.channels.telegram?.enabled) startTelegram(claude);
 if (config.channels.websocket?.enabled) setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
+setupTerminal(server as unknown as Server, config.apiToken);
 
 const shutdown = () => {
   log("Shutting down");
