@@ -91,13 +91,7 @@ export class Claude {
     mkdirSync(join(process.env.HOME || "/tmp", ".exoclaw"), { recursive: true });
     const scriptLines = [
       "#!/bin/sh",
-      "# tmux-friendly environment — simplify TUI for reliable capture-pane parsing",
-      "export CLAUDE_CODE_DISABLE_MOUSE=1",
-      "export CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL=1",
-      "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1",
-      "export CLAUDE_CODE_NO_FLICKER=1",
-      "export CLAUDE_CODE_ACCESSIBILITY=1",
-      "export NO_COLOR=1",
+      "# Env vars for headless/tmux are set in docker-compose.yml",
       `exec claude \\`,
     ];
     for (const arg of claudeArgs) {
@@ -151,12 +145,6 @@ export class Claude {
     const launcherPath = join(process.env.HOME || "/tmp", ".exoclaw", "launch.sh");
     const scriptLines = [
       "#!/bin/sh",
-      "export CLAUDE_CODE_DISABLE_MOUSE=1",
-      "export CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL=1",
-      "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1",
-      "export CLAUDE_CODE_NO_FLICKER=1",
-      "export CLAUDE_CODE_ACCESSIBILITY=1",
-      "export NO_COLOR=1",
       `exec claude \\`,
     ];
     for (const arg of claudeArgs) {
