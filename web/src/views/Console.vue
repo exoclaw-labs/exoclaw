@@ -79,7 +79,7 @@ onUnmounted(() => { ws?.close(); term?.dispose(); resizeObserver?.disconnect(); 
     <div class="terminal-header">
       <div class="d-flex align-items-center gap-2">
         <i class="bi bi-terminal" style="font-size:14px"></i>
-        <span class="fw-semibold" style="font-size:12px">Terminal</span>
+        <span class="fw-semibold" style="font-size:12px">Console</span>
       </div>
       <div class="d-flex align-items-center gap-2">
         <span class="status-dot" :class="connected ? 'connected' : 'disconnected'"></span>

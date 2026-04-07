@@ -15,7 +15,7 @@ const router = createRouter({
     { path: "/dashboard", component: Dashboard, meta: { title: "Dashboard" } },
     { path: "/code", component: Code, meta: { title: "Claude Code" } },
     { path: "/config/:section?", component: Config, meta: { title: "Configuration" } },
-    { path: "/console", component: Console, meta: { title: "Terminal" } },
+    { path: "/console", component: Console, meta: { title: "Console" } },
   ],
 });
 
