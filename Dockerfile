@@ -8,11 +8,12 @@
 
 # ── Stage 1: Build SPA ──
 FROM node:22-slim AS web-build
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 WORKDIR /web
-COPY web/package.json web/tsconfig*.json web/vite.config.ts web/index.html ./
-RUN npm install
+COPY web/package.json web/pnpm-lock.yaml web/tsconfig*.json web/vite.config.ts web/index.html ./
+RUN pnpm install --frozen-lockfile
 COPY web/src/ ./src/
-RUN npm run build
+RUN pnpm run build
 
 # ── Stage 2: Runtime ──
 FROM node:22-slim
@@ -32,6 +33,7 @@ RUN apt-get update && \
 
 ARG EXOCLAW_NPM_PACKAGES
 
+RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 RUN npm i -g @anthropic-ai/claude-code agent-browser agent-browser-mcp ${EXOCLAW_NPM_PACKAGES}
 
 ENV PIPX_HOME=/opt/pipx
@@ -40,10 +42,10 @@ RUN pipx ensurepath 2>/dev/null || true
 
 # Build the gateway server
 WORKDIR /app
-COPY package.json tsconfig.json ./
-RUN npm install
+COPY package.json pnpm-lock.yaml .npmrc tsconfig.json ./
+RUN pnpm install --frozen-lockfile
 COPY src/ ./src/
-RUN npx tsc && rm -rf src/
+RUN pnpm exec tsc && rm -rf src/
 
 # Copy built SPA
 COPY --from=web-build /web/dist ./web/dist
@@ -60,7 +62,7 @@ RUN chmod 755 /app/scripts/*.sh
 
 # Always reinstall claude-code (pass --build-arg CACHEBUST=$(date +%s) to force)
 ARG CACHEBUST=1
-RUN npm install -g @anthropic-ai/claude-code@latest
+RUN npm i -g @anthropic-ai/claude-code@latest
 
 # Sandboxed user + workspace
 RUN useradd -m -s /bin/bash agent && \

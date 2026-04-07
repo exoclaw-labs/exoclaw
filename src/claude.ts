@@ -69,7 +69,6 @@ export class Claude {
         log("warn", `Failed to parse settings.json: ${err.message}`);
       }
     }
-    settings.spinnerTipsEnabled = false;
     settings.skipDangerousModePermissionPrompt = true;
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
@@ -402,6 +401,7 @@ export class Claude {
   async *send(prompt: string): AsyncGenerator<{ type: string; content: string }> {
     if (this._busy) throw new Error("Session is busy");
 
+    log("info", `send(): prompt="${prompt.slice(0, 60)}..."`);
     this._busy = true;
 
     try {
@@ -571,6 +571,8 @@ export class Claude {
    * full tool_use, tool_result, and text blocks.
    */
   private async *sendViaSessionFile(prompt: string): AsyncGenerator<{ type: string; content: string }> {
+    log("debug", `sendViaSessionFile: prompt="${prompt.slice(0, 50)}..."`);
+
     // Find the current session JSONL file (most recently modified)
     const projectDir = join(
       join(process.env.HOME || "/home/agent", ".claude"),
@@ -592,9 +594,13 @@ export class Claude {
       return;
     }
 
+    log("debug", `sendViaSessionFile: watching ${sessionFile.split("/").pop()}`);
+
     // Record current file size (we only want new lines)
     let fileSize = 0;
     try { fileSize = statSync(sessionFile).size; } catch { /* intentional */ }
+
+    log("debug", `sendViaSessionFile: file size=${fileSize}, sending keys to tmux`);
 
     // Send the prompt to tmux
     this.sendKeys(prompt);

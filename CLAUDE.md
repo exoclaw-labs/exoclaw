@@ -9,9 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Run
 
 ```bash
-npm run build          # tsc → dist/
-npm start              # node dist/index.js
-npm run dev            # tsc --watch
+pnpm build             # tsc → dist/
+pnpm start             # node dist/index.js
+pnpm dev               # tsc --watch
 
 # Docker (production)
 docker build -t exoclaw .

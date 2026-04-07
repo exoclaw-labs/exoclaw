@@ -17,12 +17,15 @@ const state = reactive({
   // Live status from the agent (polled)
   agentBusy: false,
   agentAlive: false,
+  // Live tmux pane content (polled while busy)
+  paneContent: "",
 });
 
 let ws: WebSocket | null = null;
 let current = "";
 let initialized = false;
 let statusTimer: ReturnType<typeof setInterval> | null = null;
+let paneTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadHistory() {
   if (state.historyLoaded) return;
@@ -43,6 +46,26 @@ async function pollStatus() {
     state.agentAlive = data.session?.alive ?? false;
     state.agentBusy = data.session?.busy ?? false;
   } catch { /* ignore */ }
+}
+
+async function pollPane() {
+  try {
+    const res = await fetch("/api/session/pane");
+    const data = await res.json();
+    if (data.content) state.paneContent = data.content;
+  } catch { /* ignore */ }
+}
+
+function startPanePolling() {
+  if (paneTimer) return;
+  pollPane();
+  paneTimer = setInterval(pollPane, 500);
+}
+
+function stopPanePolling() {
+  if (!paneTimer) return;
+  clearInterval(paneTimer);
+  paneTimer = null;
 }
 
 function connect() {
@@ -110,5 +133,5 @@ export function useChatStore() {
     statusTimer = setInterval(pollStatus, 3000);
   }
 
-  return { state, send, loadHistory };
+  return { state, send, loadHistory, startPanePolling, stopPanePolling };
 }

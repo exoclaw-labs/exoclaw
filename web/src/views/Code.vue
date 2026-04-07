@@ -4,11 +4,12 @@ import { marked } from "marked";
 import { useChatStore } from "../composables/useChatStore";
 import { fetchConfig, saveConfig } from "../composables/useApi";
 
-const { state, send } = useChatStore();
+const { state, send, startPanePolling, stopPanePolling } = useChatStore();
 const input = ref("");
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const verbose = ref(false);
+const showPane = ref(false);
 
 // ── Model selector ──
 const showModes = ref(false);
@@ -66,6 +67,25 @@ async function updateThinkingLevel(value: string) {
   savingConfig.value = true;
   try { await saveConfig(config.value); } catch {}
   savingConfig.value = false;
+}
+
+// ── Remote control toggle ──
+const restartNeeded = ref(false);
+const remoteControlEnabled = computed(() => config.value?.claude?.remoteControl !== false);
+
+async function toggleRemoteControl() {
+  if (!config.value.claude) config.value.claude = {};
+  config.value.claude.remoteControl = !remoteControlEnabled.value;
+  savingConfig.value = true;
+  try { await saveConfig(config.value); restartNeeded.value = true; } catch {}
+  savingConfig.value = false;
+}
+
+async function restartSession() {
+  closeAllPopups();
+  state.messages.push({ role: "assistant", content: "Restarting session..." });
+  try { await fetch("/api/session/restart", { method: "POST" }); } catch {}
+  restartNeeded.value = false;
 }
 
 // ── Slash commands (native + skills) ──
@@ -304,6 +324,13 @@ watch(() => state.messages.length, scrollBottom);
 watch(() => state.messages[state.messages.length - 1]?.content, scrollBottom);
 watch(() => state.busy, (busy) => { if (!busy) nextTick(() => inputEl.value?.focus()); });
 
+// Pane polling: start/stop based on toggle
+const paneEl = ref<HTMLElement | null>(null);
+watch(showPane, (on) => { if (on) startPanePolling(); else stopPanePolling(); });
+watch(() => state.paneContent, () => {
+  nextTick(() => { if (paneEl.value) paneEl.value.scrollTop = paneEl.value.scrollHeight; });
+});
+
 const currentModel = computed(() => {
   const m = config.value?.claude?.model || "";
   return m.replace("claude-", "").replace(/-\d+$/, "") || "—";
@@ -317,6 +344,22 @@ const statusText = computed(() => {
 });
 
 const isWorking = computed(() => state.busy || state.agentBusy);
+
+/** Show tmux pane content, stripping the Claude Code input prompt area. */
+const paneDisplay = computed(() => {
+  const raw = state.paneContent;
+  if (!raw) return "";
+  const lines = raw.split("\n");
+  // Strip trailing idle prompt (❯) and anything after it (the typing area)
+  let endIdx = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^❯\s*$/.test(lines[i])) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(0, endIdx).filter(l => l.trim() !== "").slice(-50).join("\n");
+});
 </script>
 
 <template>
@@ -328,6 +371,10 @@ const isWorking = computed(() => state.busy || state.agentBusy);
         <span class="fw-semibold" style="font-size:12px">Claude Code</span>
       </div>
       <div class="d-flex align-items-center gap-2">
+        <button class="header-btn" :class="{ active: showPane }" @click="showPane = !showPane"
+          :title="showPane ? 'Hide session pane' : 'Show session pane'">
+          <i class="bi bi-terminal"></i>
+        </button>
         <button class="header-btn" :class="{ active: verbose }" @click="verbose = !verbose"
           :title="verbose ? 'Hide tool details' : 'Show tool details'">
           <i class="bi" :class="verbose ? 'bi-eye-fill' : 'bi-eye'"></i>
@@ -419,10 +466,15 @@ const isWorking = computed(() => state.busy || state.agentBusy);
         </div>
       </template>
 
-      <div v-if="isWorking" class="busy-bar">
+      <div v-if="isWorking && !showPane" class="busy-bar">
         <span class="busy-spinner"></span>
         <span>{{ statusText }}</span>
       </div>
+    </div>
+
+    <!-- Persistent pane viewer (toggle) -->
+    <div v-if="showPane" class="pane-viewer">
+      <pre ref="paneEl" class="pane-content">{{ paneDisplay || 'Waiting for session output...' }}</pre>
     </div>
 
     <!-- Input area -->
@@ -480,7 +532,20 @@ const isWorking = computed(() => state.busy || state.agentBusy);
               <span>{{ t.label }}</span>
               <i v-if="thinkingLevel === t.value" class="bi bi-check2 ms-auto"></i>
             </button>
+            <div class="popup-divider"></div>
+            <div class="popup-section-label">Session</div>
+            <button class="popup-item" @click="toggleRemoteControl">
+              <i class="bi bi-broadcast"></i>
+              <span>Remote control</span>
+              <i class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
+            </button>
+            <div class="popup-divider"></div>
+            <button class="popup-item popup-item-danger" @click="restartSession">
+              <i class="bi bi-arrow-clockwise"></i>
+              <span>Restart session</span>
+            </button>
             <div v-if="savingConfig" class="popup-footer">Saving...</div>
+            <div v-if="restartNeeded" class="popup-footer popup-footer-warn">Restart needed</div>
           </div>
         </div>
         <span class="mode-bar-info">Bypass permissions</span>
@@ -610,7 +675,30 @@ const isWorking = computed(() => state.busy || state.agentBusy);
   white-space: nowrap; max-width: 200px; font-style: italic;
 }
 
-/* ── Busy ── */
+/* ── Pane viewer (live tmux output) ── */
+.pane-viewer {
+  margin: 4px auto;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1a1a2e;
+}
+.pane-content {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", var(--bs-font-monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e0e0e0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+
+/* ── Busy fallback ── */
 .busy-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 16px; font-size: 14px; color: var(--bs-tertiary-color);
@@ -719,6 +807,9 @@ const isWorking = computed(() => state.busy || state.agentBusy);
 .popup-section-label { padding: 6px 10px 2px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--bs-tertiary-color); }
 .popup-divider { height: 1px; background: var(--bs-border-color); margin: 4px 0; }
 .popup-footer { padding: 4px 10px; font-size: 10px; color: var(--bs-tertiary-color); border-top: 1px solid var(--bs-border-color); text-align: center; }
+.popup-footer-warn { color: var(--bs-warning); }
+.popup-item-danger { color: var(--bs-danger); }
+.popup-item-danger:hover { background: color-mix(in srgb, var(--bs-danger) 10%, transparent); }
 .popup-empty { padding: 16px; text-align: center; color: var(--bs-tertiary-color); font-size: 12px; }
 
 /* ── Markdown ── */
