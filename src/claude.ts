@@ -46,7 +46,6 @@ const IDLE_PATTERN = /^❯\s*$/m;
 
 export class Claude {
   private config: ClaudeConfig;
-  private mcpConfigPath: string;
   private _busy = false;
   private _alive = false;
   private channelAvailable = false;
@@ -57,7 +56,7 @@ export class Claude {
 
   constructor(config: ClaudeConfig) {
     this.config = config;
-    this.mcpConfigPath = this.writeMcpConfig(config.mcpServers || {});
+    this.writeMcpConfig(config.mcpServers || {});
   }
 
   /** Write Claude Code settings that make the TUI tmux-friendly. */
@@ -72,6 +71,7 @@ export class Claude {
       }
     }
     settings.skipDangerousModePermissionPrompt = true;
+    settings.enableRemoteControlForAllSessions = true;
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
 
