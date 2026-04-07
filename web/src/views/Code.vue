@@ -262,6 +262,24 @@ onMounted(() => {
   window.addEventListener("keydown", onWindowKeydown);
   document.addEventListener("click", onDocClick);
 });
+/** Strip the Claude Code input prompt area from pane output.
+ *  Removes the trailing block: ────, ❯ prompt, ────, ⏵⏵ permissions line */
+const paneDisplay = computed(() => {
+  const raw = pane.value;
+  if (!raw) return "";
+  const lines = raw.split("\n");
+  let promptIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^❯/.test(lines[i])) { promptIdx = i; break; }
+  }
+  if (promptIdx === -1) return lines.filter(l => l.trim() !== "").join("\n");
+  let startIdx = promptIdx;
+  for (let i = promptIdx - 1; i >= 0; i--) {
+    if (/^[─━─\u2500\u2501]{4,}/.test(lines[i])) { startIdx = i; break; }
+  }
+  return lines.slice(0, startIdx).filter(l => l.trim() !== "").join("\n");
+});
+
 onUnmounted(() => {
   clearInterval(timer);
   window.removeEventListener("keydown", onWindowKeydown);
@@ -284,7 +302,7 @@ onUnmounted(() => {
 
     <!-- Pane -->
     <div ref="scrollEl" class="flex-grow-1 overflow-auto p-0" style="min-height:0">
-      <pre class="pane-content">{{ pane || 'Loading...' }}</pre>
+      <pre class="pane-content">{{ paneDisplay || 'Loading...' }}</pre>
     </div>
 
     <!-- Quick keys -->
