@@ -12,7 +12,6 @@ const claudeFiles = ref<Record<string, string>>({});
 const jsonText = ref("");
 const saving = ref(false);
 const showPersonaWizard = ref(false);
-const activeMdFile = ref("CLAUDE.md");
 const activeJsonFile = ref(".mcp.json");
 const skills = ref<{ name: string; content: string }[]>([]);
 const activeSkill = ref<string | null>(null);
@@ -85,42 +84,50 @@ function handleDrop(e: DragEvent) {
   }
 }
 
-// ── Sub-agents ──
+// ── Agents (unified main + sub-agent editing) ──
 interface SubAgent { name: string; files: Record<string, string> }
 const subAgents = ref<SubAgent[]>([]);
 const selectedAgent = ref<string>("__main__");
-const activeSubAgentFile = ref("META.md");
 const subAgentFiles = ref<Record<string, string>>({});
 const newAgentName = ref("");
-const savingSubAgent = ref(false);
+const currentFile = ref("CLAUDE.md");
 
-const OPTIONAL_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "TOOLS.md", "HEARTBEAT.md"];
+const MAIN_FILES = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "MEMORY.md", "HEARTBEAT.md"];
+const SUB_FILES = ["META.md", "CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "TOOLS.md", "HEARTBEAT.md"];
+const MAIN_REQUIRED = ["CLAUDE.md"];
+const SUB_REQUIRED = ["META.md", "CLAUDE.md"];
 
 async function loadSubAgents() {
   subAgents.value = await fetchSubAgents();
 }
 
+const visibleTabs = computed(() => {
+  if (selectedAgent.value === "__main__") {
+    return MAIN_FILES.filter(f => claudeFiles.value[f] !== undefined);
+  }
+  return SUB_FILES.filter(f => subAgentFiles.value[f] !== undefined);
+});
+
+const addableFiles = computed(() => {
+  if (selectedAgent.value === "__main__") {
+    return MAIN_FILES.filter(f => claudeFiles.value[f] === undefined);
+  }
+  return SUB_FILES.filter(f => subAgentFiles.value[f] === undefined && !SUB_REQUIRED.includes(f));
+});
+
 function selectAgent(name: string) {
   selectedAgent.value = name;
-  if (name !== "__main__") {
+  if (name === "__main__") {
+    currentFile.value = "CLAUDE.md";
+  } else {
     const a = subAgents.value.find(x => x.name === name);
     subAgentFiles.value = a ? { ...a.files } : {};
-    // Default to META.md tab, fallback to first available
-    const files = Object.keys(subAgentFiles.value);
-    activeSubAgentFile.value = files.includes("META.md") ? "META.md" : files[0] || "META.md";
+    currentFile.value = "META.md";
   }
 }
 
-async function saveSubAgentCurrentFile() {
-  if (selectedAgent.value === "__main__") return;
-  savingSubAgent.value = true;
-  try {
-    await saveSubAgentFile(selectedAgent.value, activeSubAgentFile.value, subAgentFiles.value[activeSubAgentFile.value] || "");
-    await loadSubAgents();
-    msg.value = { type: "success", text: `Saved ${activeSubAgentFile.value}` };
-  } finally {
-    savingSubAgent.value = false;
-  }
+function onSelectAgentChange(e: Event) {
+  selectAgent((e.target as HTMLSelectElement).value);
 }
 
 async function createSubAgent() {
@@ -136,24 +143,50 @@ async function createSubAgent() {
 async function removeSubAgent(name: string) {
   if (!confirm(`Delete agent "${name}"?`)) return;
   await deleteSubAgent(name);
-  if (selectedAgent.value === name) selectedAgent.value = "__main__";
+  if (selectedAgent.value === name) selectAgent("__main__");
   await loadSubAgents();
 }
 
-async function addCompanionFile(file: string) {
-  if (selectedAgent.value === "__main__") return;
-  subAgentFiles.value[file] = `# ${file.replace(".md", "")}\n\n`;
-  await saveSubAgentFile(selectedAgent.value, file, subAgentFiles.value[file]);
-  await loadSubAgents();
-  activeSubAgentFile.value = file;
+async function addFile(file: string) {
+  if (selectedAgent.value === "__main__") {
+    claudeFiles.value[file] = "";
+  } else {
+    subAgentFiles.value[file] = `# ${file.replace(".md", "")}\n\n`;
+    await saveSubAgentFile(selectedAgent.value, file, subAgentFiles.value[file]);
+    await loadSubAgents();
+  }
+  currentFile.value = file;
 }
 
-async function removeCompanionFile(file: string) {
-  if (!confirm(`Remove ${file} from this agent?`)) return;
-  await deleteSubAgentFile(selectedAgent.value, file);
-  delete subAgentFiles.value[file];
-  await loadSubAgents();
-  activeSubAgentFile.value = "META.md";
+async function removeFile(file: string) {
+  if (!confirm(`Remove ${file}?`)) return;
+  if (selectedAgent.value === "__main__") {
+    delete claudeFiles.value[file];
+    await saveClaudeFile(file, "");
+  } else {
+    await deleteSubAgentFile(selectedAgent.value, file);
+    delete subAgentFiles.value[file];
+    await loadSubAgents();
+  }
+  currentFile.value = selectedAgent.value === "__main__" ? "CLAUDE.md" : "META.md";
+}
+
+function canRemoveFile(f: string): boolean {
+  if (selectedAgent.value === "__main__") return !MAIN_REQUIRED.includes(f);
+  return !SUB_REQUIRED.includes(f);
+}
+
+function getFileContent(): string {
+  if (selectedAgent.value === "__main__") return claudeFiles.value[currentFile.value] || "";
+  return subAgentFiles.value[currentFile.value] || "";
+}
+
+function setFileContent(val: string) {
+  if (selectedAgent.value === "__main__") {
+    onClaudeFileEdit(currentFile.value, val);
+  } else {
+    subAgentFiles.value[currentFile.value] = val;
+  }
 }
 
 const mdFiles = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "MEMORY.md", "HEARTBEAT.md"];
@@ -242,6 +275,14 @@ async function handleSave() {
       if (name === "settings.json" || name === "CLAUDE.md") {
         await saveClaudeFile(name, content);
       }
+    }
+
+    // Save sub-agent files when on the agents page
+    if (section.value === "agents" && selectedAgent.value !== "__main__") {
+      for (const [file, content] of Object.entries(subAgentFiles.value)) {
+        await saveSubAgentFile(selectedAgent.value, file, content);
+      }
+      await loadSubAgents();
     }
 
     msg.value = { type: "success", text: "Saved. Restart container to apply session changes." };
@@ -532,142 +573,104 @@ onMounted(load);
 
       <!-- Agents -->
       <div v-if="section === 'agents'">
-        <div class="row g-3">
-          <!-- Agent list -->
-          <div class="col-md-3">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <span class="small text-body-secondary fw-semibold">Agents</span>
-            </div>
-            <div class="list-group mb-2">
-              <!-- Main agent -->
-              <button
-                class="list-group-item list-group-item-action d-flex align-items-center gap-2"
-                :class="{ active: selectedAgent === '__main__' }"
-                @click="selectAgent('__main__')"
-              >
-                <i class="bi bi-cpu-fill" style="font-size:12px"></i>
-                <span class="small">Main Agent</span>
-                <span class="badge text-bg-primary ms-auto" style="font-size:10px">main</span>
-              </button>
-              <!-- Sub-agents -->
-              <button
-                v-for="a in subAgents" :key="a.name"
-                class="list-group-item list-group-item-action d-flex align-items-center gap-2"
-                :class="{ active: selectedAgent === a.name }"
-                @click="selectAgent(a.name)"
-              >
-                <i class="bi bi-robot" style="font-size:12px"></i>
-                <span class="small text-truncate flex-grow-1">{{ a.name }}</span>
-                <button class="btn btn-sm p-0 text-body-secondary" style="line-height:1" @click.stop="removeSubAgent(a.name)" title="Delete">
-                  <i class="bi bi-trash" style="font-size:11px"></i>
-                </button>
-              </button>
-            </div>
-            <!-- New sub-agent -->
-            <form @submit.prevent="createSubAgent" class="input-group input-group-sm">
-              <input v-model="newAgentName" class="form-control" placeholder="new-agent-name" />
-              <button class="btn btn-outline-primary" type="submit" :disabled="!newAgentName.trim()" title="Create">
+        <!-- Persona Wizard overlay -->
+        <div v-if="showPersonaWizard">
+          <Setup :force-persona="true" @complete="showPersonaWizard = false; load()" />
+          <button class="btn btn-sm btn-outline-secondary mt-3" @click="showPersonaWizard = false; load()">
+            <i class="bi bi-arrow-left me-1"></i>Back to editor
+          </button>
+        </div>
+        <template v-else>
+          <!-- Agent selector bar — centered -->
+          <div class="d-flex justify-content-center align-items-center gap-2 mb-3">
+            <select
+              :value="selectedAgent"
+              @change="onSelectAgentChange"
+              class="form-select form-select-sm"
+              style="max-width: 240px"
+            >
+              <option value="__main__">Main Agent</option>
+              <option v-for="a in subAgents" :key="a.name" :value="a.name">{{ a.name }}</option>
+            </select>
+            <form @submit.prevent="createSubAgent" class="input-group input-group-sm" style="max-width: 200px">
+              <input v-model="newAgentName" class="form-control" placeholder="new-agent" />
+              <button class="btn btn-outline-primary" type="submit" :disabled="!newAgentName.trim()" title="Create agent">
                 <i class="bi bi-plus"></i>
               </button>
             </form>
+            <button
+              v-if="selectedAgent !== '__main__'"
+              class="btn btn-sm btn-outline-danger"
+              @click="removeSubAgent(selectedAgent)"
+              title="Delete agent"
+            >
+              <i class="bi bi-trash"></i>
+            </button>
           </div>
 
-          <!-- Editor panel -->
-          <div class="col-md-9">
-            <!-- Main agent editor -->
-            <div v-if="selectedAgent === '__main__'">
-              <div v-if="showPersonaWizard">
-                <Setup :force-persona="true" @complete="showPersonaWizard = false; load()" />
-                <button class="btn btn-sm btn-outline-secondary mt-3" @click="showPersonaWizard = false; load()">
-                  <i class="bi bi-arrow-left me-1"></i>Back to editor
+          <!-- File tabs -->
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
+              <li v-for="f in visibleTabs" :key="f" class="nav-item">
+                <button
+                  class="nav-link small py-1 px-2 d-flex align-items-center gap-1"
+                  :class="{ active: currentFile === f }"
+                  @click="currentFile = f"
+                >
+                  {{ f }}
+                  <span
+                    v-if="canRemoveFile(f)"
+                    class="ms-1 text-body-secondary"
+                    style="font-size:10px;line-height:1;cursor:pointer"
+                    @click.stop="removeFile(f)"
+                    title="Remove file"
+                  >&times;</span>
                 </button>
-              </div>
-              <div v-else>
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
-                    <li v-for="f in mdFiles" :key="f" class="nav-item">
-                      <button class="nav-link small py-1 px-2" :class="{ active: activeMdFile === f }" @click="activeMdFile = f">
-                        {{ f }}
-                      </button>
-                    </li>
-                  </ul>
-                  <button v-if="activeMdFile === 'CLAUDE.md'" class="btn btn-sm btn-outline-primary ms-2 flex-shrink-0" @click="showPersonaWizard = true">
-                    <i class="bi bi-magic me-1"></i>Persona Wizard
-                  </button>
-                </div>
-                <div class="card">
-                  <div class="card-header d-flex justify-content-between align-items-center">
-                    <span class="small fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>workspace/{{ activeMdFile }}</span>
-                    <span v-if="!claudeFiles[activeMdFile]" class="badge text-bg-secondary">not created</span>
-                  </div>
-                  <div class="card-body p-0">
-                    <textarea
-                      :value="claudeFiles[activeMdFile] || ''"
-                      @input="(e: any) => onClaudeFileEdit(activeMdFile, e.target.value)"
-                      rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
-                      :placeholder="mdPlaceholders[activeMdFile] || `# ${activeMdFile}`"
-                    ></textarea>
-                  </div>
-                </div>
-                <p class="text-body-secondary small mt-2">{{ mdDescriptions[activeMdFile] || 'Workspace file read by Claude on startup.' }}</p>
-              </div>
-            </div>
-
-            <!-- Sub-agent editor -->
-            <div v-else>
-              <div class="d-flex justify-content-between align-items-center mb-2">
-                <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
-                  <li v-for="f in ['META.md', 'CLAUDE.md', ...OPTIONAL_FILES.filter(f => subAgentFiles[f] !== undefined)]" :key="f" class="nav-item">
-                    <button
-                      class="nav-link small py-1 px-2 d-flex align-items-center gap-1"
-                      :class="{ active: activeSubAgentFile === f }"
-                      @click="activeSubAgentFile = f"
-                    >
-                      {{ f }}
-                      <span
-                        v-if="f !== 'META.md' && f !== 'CLAUDE.md'"
-                        class="ms-1 text-body-secondary"
-                        style="font-size:10px;line-height:1;cursor:pointer"
-                        @click.stop="removeCompanionFile(f)"
-                        title="Remove file"
-                      >&times;</span>
-                    </button>
+              </li>
+            </ul>
+            <div class="d-flex gap-2 ms-2 flex-shrink-0">
+              <div class="dropdown" v-if="addableFiles.length">
+                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+                  <i class="bi bi-plus"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                  <li v-for="f in addableFiles" :key="f">
+                    <button class="dropdown-item small" @click="addFile(f)">{{ f }}</button>
                   </li>
                 </ul>
-                <div class="d-flex gap-2 ms-2 flex-shrink-0">
-                  <!-- Add companion file dropdown -->
-                  <div class="dropdown" v-if="OPTIONAL_FILES.some(f => subAgentFiles[f] === undefined)">
-                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
-                      <i class="bi bi-plus"></i>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end">
-                      <li v-for="f in OPTIONAL_FILES.filter(f => subAgentFiles[f] === undefined)" :key="f">
-                        <button class="dropdown-item small" @click="addCompanionFile(f)">{{ f }}</button>
-                      </li>
-                    </ul>
-                  </div>
-                  <button class="btn btn-sm btn-primary" :disabled="savingSubAgent" @click="saveSubAgentCurrentFile">
-                    <i class="bi bi-save me-1"></i>{{ savingSubAgent ? 'Saving...' : 'Save' }}
-                  </button>
-                </div>
               </div>
-
-              <div class="card">
-                <div class="card-header small fw-semibold">
-                  <i class="bi bi-robot me-1"></i>.claude/agents/{{ selectedAgent }}/{{ activeSubAgentFile }}
-                  <span v-if="activeSubAgentFile === 'META.md'" class="text-body-secondary ms-2 fw-normal">-- frontmatter fields (name, description, schedule, model)</span>
-                </div>
-                <div class="card-body p-0">
-                  <textarea
-                    :value="subAgentFiles[activeSubAgentFile] || ''"
-                    @input="(e: any) => subAgentFiles[activeSubAgentFile] = e.target.value"
-                    rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
-                  ></textarea>
-                </div>
-              </div>
+              <button
+                v-if="selectedAgent === '__main__' && currentFile === 'CLAUDE.md'"
+                class="btn btn-sm btn-outline-primary"
+                @click="showPersonaWizard = true"
+              >
+                <i class="bi bi-magic me-1"></i>Persona Wizard
+              </button>
             </div>
           </div>
-        </div>
+
+          <!-- Editor card -->
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <span class="small fw-semibold">
+                <i :class="selectedAgent === '__main__' ? 'bi bi-file-earmark-text' : 'bi bi-robot'" class="me-1"></i>
+                {{ selectedAgent === '__main__' ? `workspace/${currentFile}` : `.claude/agents/${selectedAgent}/${currentFile}` }}
+              </span>
+              <span v-if="currentFile === 'META.md'" class="text-body-secondary small">name, description, schedule, model</span>
+            </div>
+            <div class="card-body p-0">
+              <textarea
+                :value="getFileContent()"
+                @input="(e: any) => setFileContent(e.target.value)"
+                rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
+                :placeholder="mdPlaceholders[currentFile] || `# ${currentFile}`"
+              ></textarea>
+            </div>
+          </div>
+          <p v-if="selectedAgent === '__main__'" class="text-body-secondary small mt-2">
+            {{ mdDescriptions[currentFile] || 'Workspace file read by Claude on startup.' }}
+          </p>
+        </template>
       </div>
 
 
