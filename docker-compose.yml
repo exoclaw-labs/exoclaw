@@ -6,7 +6,9 @@
 #
 # Claude env vars are collected here so they're easy to override and
 # are automatically inherited by sub-agent processes (claude -p jobs).
-# CLAUDE_CONFIG_DIR is set in the Dockerfile and intentionally omitted here.
+# CLAUDE_CONFIG_DIR is NOT set — Claude Code uses its default ~/.claude for
+# user-level config (credentials, settings, sessions). Project-level config
+# (agents, skills) lives in ~/workspace/.claude and is discovered natively.
 
 x-claude-env: &claude-env
   # ── Auth ──────────────────────────────────────────────────────────────────
