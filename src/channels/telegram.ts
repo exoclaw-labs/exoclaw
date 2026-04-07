@@ -1,7 +1,7 @@
 /**
  * Telegram bot adapter — long-polling, no webhook setup needed.
- * Uses tmux send-keys + capture-pane so messages appear naturally
- * in the Claude Code session.
+ * Uses claude.send() which sends via tmux keystrokes and reads
+ * structured responses from the JSONL session file.
  *
  * Env: TELEGRAM_BOT_TOKEN
  */
@@ -32,7 +32,6 @@ async function poll(claude: Claude): Promise<void> {
       const data = (await res.json()) as { ok: boolean; result: any[] };
       if (!data.ok) { await sleep(5000); continue; }
 
-      if (data.result.length) log("debug", `Got ${data.result.length} updates`);
       for (const u of data.result) {
         offset = u.update_id + 1;
         if (u.message?.text) {
@@ -61,9 +60,14 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
       body: JSON.stringify({ chat_id: chatId, action: "typing" }),
     });
 
-    log("debug", `Calling sendAndWait for: "${prompt.slice(0, 50)}"`);
-    let response = await claude.sendAndWait(prompt);
-    log("debug", `sendAndWait returned: "${(response || "").slice(0, 100)}"`);
+    // Collect response from structured JSONL stream
+    const chunks: string[] = [];
+    let doneText = "";
+    for await (const ev of claude.send(prompt)) {
+      if (ev.type === "chunk") chunks.push(ev.content);
+      if (ev.type === "done") doneText = ev.content;
+    }
+    let response = doneText || chunks.join("");
 
     // Scan for credential leaks before sending
     const { scanForLeaks } = await import("../content-scanner.js");
@@ -74,6 +78,7 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
     }
 
     if (!response) response = "[No response]";
+    log("debug", `Sending ${response.length} chars to chat ${chatId}`);
 
     for (const chunk of splitMsg(response, 4096)) {
       await fetch(`${API}/sendMessage`, {
@@ -84,7 +89,6 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
     }
   } catch (err) {
     log("error", `Telegram send failed: ${err}`);
-    // Send error to user so they know something went wrong
     try {
       await fetch(`${API}/sendMessage`, {
         method: "POST",
