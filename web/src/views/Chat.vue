@@ -111,6 +111,12 @@ async function restartSession() {
   restartNeeded.value = false;
 }
 
+async function freshSession() {
+  closeAllPopups();
+  try { await fetch("/api/session/fresh", { method: "POST" }); } catch {}
+  restartNeeded.value = false;
+}
+
 // ── Slash commands ──
 const showSlash = ref(false);
 const customSkills = ref<{ name: string; content: string }[]>([]);
@@ -498,9 +504,13 @@ onUnmounted(() => {
               <i class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
             </button>
             <div class="popup-divider"></div>
-            <button class="popup-item popup-item-danger" @click="restartSession">
+            <button class="popup-item" @click="restartSession">
               <i class="bi bi-arrow-clockwise"></i>
               <span>Restart session</span>
+            </button>
+            <button class="popup-item popup-item-danger" @click="freshSession">
+              <i class="bi bi-plus-circle"></i>
+              <span>New session</span>
             </button>
             <div v-if="savingConfig" class="popup-footer">Saving...</div>
             <div v-if="restartNeeded" class="popup-footer popup-footer-warn">Restart needed</div>

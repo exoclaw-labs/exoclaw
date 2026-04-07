@@ -253,6 +253,12 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: "ok" });
   });
 
+  app.post("/api/session/fresh", (c) => {
+    audit.log({ event_type: "session", detail: "Fresh session started via API", source: "api" });
+    claude.freshStart();
+    return c.json({ status: "ok" });
+  });
+
   // ── Session history (parsed from tmux pane) ──
 
   app.get("/api/session/history", (c) => {

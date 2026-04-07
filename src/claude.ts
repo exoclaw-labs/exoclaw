@@ -740,8 +740,17 @@ export class Claude {
   }
 
   restart(): void {
-    log("info", "Restarting Claude session");
+    log("info", "Restarting Claude session (continuing)");
     this.close();
+    setTimeout(() => this.respawn(), 1000);
+  }
+
+  /** Kill session and start completely fresh — no --continue, no session history. */
+  freshStart(): void {
+    log("info", "Starting fresh Claude session");
+    this.close();
+    // Remove saved session ID so buildArgs() won't add --continue
+    try { unlinkSync(this.sessionFilePath); } catch { /* intentional */ }
     setTimeout(() => this.respawn(), 1000);
   }
 
