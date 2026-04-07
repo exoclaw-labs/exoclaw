@@ -250,7 +250,7 @@ export class CronScheduler {
   /** Hook to resolve command sentinels (e.g., DREAMING_CONSOLIDATION). */
   commandResolver: ((command: string) => string | null) | null = null;
 
-  constructor(db: Database.Database, config: CronConfig, model = "sonnet", permissionMode = "bypassPermissions") {
+  constructor(db: Database.Database, config: CronConfig, model = "claude-sonnet-4-6", permissionMode = "bypassPermissions") {
     this.store = new CronStore(db);
     this.config = config;
     this.model = model;

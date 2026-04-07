@@ -90,7 +90,7 @@ export class BackgroundReviewer {
   private model: string;
   private permissionMode: string;
 
-  constructor(config: ReviewConfig, model = "sonnet", permissionMode = "bypassPermissions") {
+  constructor(config: ReviewConfig, model = "claude-sonnet-4-6", permissionMode = "bypassPermissions") {
     this.config = config;
     this.model = model;
     this.permissionMode = permissionMode;

@@ -66,7 +66,7 @@ export function loadConfig(): Record<string, any> {
         port: parseInt(process.env.PORT || "8080", 10),
         host: process.env.HOST || "0.0.0.0",
         claude: {
-          model: process.env.CLAUDE_MODEL || "sonnet",
+          model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
           permissionMode: process.env.PERMISSION_MODE || "bypassPermissions",
           systemPrompt: process.env.SYSTEM_PROMPT,
           mcpServers: {

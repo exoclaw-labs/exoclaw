@@ -49,6 +49,7 @@ export class Claude {
   private _busy = false;
   private _alive = false;
   private channelAvailable = false;
+  private _remoteControlUrl: string | null = null;
 
   /** Called after each turn completes. Set by the gateway to trigger background review. */
   onTurnComplete: (() => void) | null = null;
@@ -296,7 +297,7 @@ export class Claude {
   }
 
   private saveSessionId(): void {
-    // Capture session ID from the tmux pane after startup
+    // Capture session ID and remote control URL from the tmux pane after startup
     setTimeout(() => {
       try {
         const pane = this.capturePane();
@@ -306,6 +307,12 @@ export class Claude {
           mkdirSync(dir, { recursive: true });
           writeFileSync(this.sessionFilePath, match[0]);
           log("info", `Saved session ID: ${match[0]}`);
+        }
+        // Capture remote control URL (printed by Claude Code at startup)
+        const rcMatch = pane.match(/(https:\/\/claude\.ai\/code\/remote-control[^\s]*)/);
+        if (rcMatch) {
+          this._remoteControlUrl = rcMatch[1];
+          log("info", `Captured remote control URL`);
         }
       } catch { /* intentional */ }
     }, 15000); // Wait for session to fully start
@@ -785,6 +792,7 @@ export class Claude {
   get alive(): boolean { return this._alive; }
   get busy(): boolean { return this._busy; }
   get usingChannel(): boolean { return this.channelAvailable; }
+  get remoteControlUrl(): string | null { return this._remoteControlUrl; }
 
   restart(): void {
     log("info", "Restarting Claude session");

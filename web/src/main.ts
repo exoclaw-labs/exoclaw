@@ -6,6 +6,7 @@ import App from "./App.vue";
 import Dashboard from "./views/Dashboard.vue";
 import Config from "./views/Config.vue";
 import Console from "./views/Console.vue";
+import Terminal from "./views/Terminal.vue";
 import Code from "./views/Code.vue";
 
 const router = createRouter({
@@ -16,6 +17,7 @@ const router = createRouter({
     { path: "/code", component: Code, meta: { title: "Claude Code" } },
     { path: "/config/:section?", component: Config, meta: { title: "Configuration" } },
     { path: "/console", component: Console, meta: { title: "Console" } },
+    { path: "/terminal", component: Terminal, meta: { title: "Terminal" } },
   ],
 });
 

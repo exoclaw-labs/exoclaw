@@ -15,12 +15,16 @@ Claude Code is a capable autonomous agent, but it only runs when you're in a ter
 ## Features
 
 - **Persistent session** — Claude Code runs in tmux with `--remote-control --continue`. Auto-restarts on crash.
-- **Multi-channel** — Slack, Discord, Telegram, WhatsApp (via WhatsApp Web), WebSocket. One agent, all your channels.
+- **Multi-channel** — Slack, Discord, Telegram, WhatsApp (via Twilio), WebSocket. One agent, all your channels.
 - **Web dashboard** — Vue 3 SPA. Chat, config editor, session history, audit log. No extra setup.
 - **Scheduled tasks** — SQLite-backed cron. Three job types: `prompt` (LLM-driven), `shell` (direct exec), `agent` (named agent delegation). Supports standard cron, ISO datetimes, and relative expressions (`now + 30m`).
 - **Self-improvement loop** — after each conversation, Claude consolidates its own memory and creates/updates skills. No manual prompt engineering required.
 - **Safety layer** — 70+ regex patterns scan inbound and outbound content for credential leaks, prompt injection, and steganography. Rate limiting, E-STOP (freeze or kill), and agent-initiated approval requests.
-- **Session search** — full-text search over conversation history via SQLite FTS5 with Porter stemmer.
+- **Session search** — full-text search over conversation history via SQLite FTS5 with Porter stemmer. Optional hybrid mode adds vector embeddings for semantic search (OpenAI-compatible endpoint required).
+- **Agent registry** — define named agents in `.claude/agents/*.md` with YAML frontmatter (name, schedule, model). Loaded and registered with the cron scheduler on first run; hot-reloaded on change.
+- **Heartbeat** — scheduled check-ins run a configurable prompt every 30 minutes. Silent if nothing needs attention; broadcasts to connected clients if action is needed.
+- **Dreaming** — nightly consolidation of daily notes into long-term memory. Scores entries by signal quality and promotes high-value items to `MEMORY.md`.
+- **Insights** — usage analytics from session history: message volume, tool usage breakdown, hourly activity pattern, role distribution.
 - **One container per user** — no shared state, no shared config. Each instance is its own entity.
 
 ## Quick Start

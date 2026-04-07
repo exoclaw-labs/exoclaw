@@ -79,6 +79,7 @@ onUnmounted(() => clearInterval(timer));
               <tr><td class="text-body-secondary">Port</td><td class="font-monospace">{{ status.gateway_port }}</td></tr>
               <tr><td class="text-body-secondary">Paired</td><td>{{ status.paired ? 'Yes' : 'No' }}</td></tr>
               <tr><td class="text-body-secondary">Session I/O</td><td>{{ status.session.io || 'tmux' }}</td></tr>
+              <tr><td class="text-body-secondary">Remote Control</td><td><a v-if="status.session.remoteControlUrl" :href="status.session.remoteControlUrl" target="_blank" class="font-monospace">{{ status.session.remoteControlUrl }}</a><span v-else class="text-body-secondary">Not captured</span></td></tr>
             </tbody>
           </table>
         </div>
