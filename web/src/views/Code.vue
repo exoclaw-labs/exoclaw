@@ -21,7 +21,11 @@ const models = [
   "claude-haiku-4-5-20251001",
 ];
 
-const agentName = computed(() => config.value.name || "Claude");
+const agentName = computed(() => {
+  const n = config.value.name;
+  if (!n || n === "agent") return "ExoClaw";
+  return n.charAt(0).toUpperCase() + n.slice(1);
+});
 
 async function loadConfig() {
   try { config.value = await fetchConfig(); initThinkingLevel(); } catch {}
