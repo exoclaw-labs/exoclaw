@@ -640,9 +640,10 @@ export function createApp(config: GatewayConfig) {
     // Broadcast to SSE clients (dashboard, web UI)
     broadcastSSE("cron_complete", { job_id: job.id, name: job.name, status: run.status, result: run.result?.slice(0, 500) });
 
-    // Sub-agent self-improvement: review the run and update the agent's MEMORY.md
+    // Sub-agent self-improvement: log run result to agent's MEMORY.md and re-stitch
     if (isAgentJob(job.name)) {
-      reviewAgentRun(job.name, job, run, () => stitchAgent(job.name));
+      reviewAgentRun(job.name, job, run);
+      stitchAgent(job.name);
     }
   });
 
