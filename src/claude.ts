@@ -43,34 +43,6 @@ export interface ClaudeConfig {
 
 const IDLE_PATTERN = /^❯\s*$/m;
 
-/** Test if a tmux pane line is TUI noise (dividers, status, spinners, chrome). */
-function isTuiNoise(l: string): boolean {
-  const t = l.trim();
-  if (!t) return true;
-  if (/^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(t)) return true;
-  if (/^[╭╰│╮╯┌└┐┘├┤┬┴┼▐▝▛▜▘]/.test(t)) return true;
-  if (/[▐▛▜▌▝█▘]/.test(t)) return true; // Claude Code banner art (any position)
-  if (/~\/\w/.test(t) && t.length < 30) return true; // "~/workspace" path line
-  if (/^\s*⏵⏵/.test(l)) return true;
-  if (/bypass permissions/i.test(t)) return true;
-  if (/[◐◑◒◓]/.test(t)) return true;
-  if (/shift\+tab to cycle/i.test(t)) return true;
-  if (/ctrl\+o to expand/i.test(t)) return true;
-  if (/\? for shortcu/.test(t)) return true;
-  if (/Claude Code has switched/.test(t)) return true;
-  if (/Please upgrade/.test(t)) return true;
-  if (/↑.*·/.test(t) && t.length < 80) return true; // "↑ Opus now defaults to..." tips
-  // Spinner decorations: ✻ Voice mode..., · Thinking..., * Tempering…
-  if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★*]\s+\w/.test(t)) return true;
-  // Status lines
-  if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return true;
-  if (/Claude Code v\d/.test(t)) return true; // version banner
-  if (/·\s*Claude\s+(Max|Pro|Free)/i.test(t)) return true; // "Sonnet 4.6 · Claude Max"
-  if (/tmux detected/i.test(t)) return true;
-  if (/PgUp\/PgDn/.test(t)) return true;
-  if (/~\/\.tmux\.conf/.test(t)) return true;
-  return false;
-}
 
 export class Claude {
   private config: ClaudeConfig;
@@ -735,83 +707,6 @@ export class Claude {
 
     writeFileSync(path, JSON.stringify({ mcpServers: allServers }, null, 2));
     return path;
-  }
-
-  /**
-   * Send a prompt via tmux keystrokes and wait for the response by polling
-   * the pane until the idle prompt (❯) reappears. Returns the extracted
-   * response text. This is the simplest integration path — the message
-   * appears naturally in the Claude Code TUI session.
-   */
-  async sendAndWait(prompt: string, timeoutMs = 5 * 60 * 1000): Promise<string> {
-    if (this._busy) throw new Error("Session is busy");
-    this._busy = true;
-
-    try {
-      // Snapshot pane length before sending — we only care about content after this point
-      const beforePane = this.capturePane();
-      const beforeLen = beforePane.length;
-
-      this.sendKeys(prompt);
-      await sleep(1500);
-
-      const startTime = Date.now();
-      let sawEcho = false;
-
-      while (Date.now() - startTime < timeoutMs) {
-        await sleep(POLL_INTERVAL_MS);
-        const pane = this.capturePane();
-
-        // Only look at new content (after what was there before we sent)
-        // Use the full pane but find our prompt echo to anchor
-        const promptSlice = prompt.slice(0, 40);
-        const promptEcho = `❯ ${promptSlice}`;
-
-        // Find our echo — must be in new content (after beforeLen chars or near the end)
-        const echoIdx = pane.lastIndexOf(promptEcho);
-        if (echoIdx === -1) continue;
-        sawEcho = true;
-
-        // Everything after our prompt echo
-        const afterEcho = pane.slice(echoIdx + promptEcho.length);
-        const allLines = afterEcho.split("\n");
-
-        // Find the response start (● marker) — must appear before we accept idle prompt
-        const hasResponse = allLines.some(l => /^\s*●/.test(l) || /^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched)\s/.test(l));
-
-        // Find the idle prompt AFTER the response
-        let responseEnd = -1;
-        for (let i = allLines.length - 1; i >= 0; i--) {
-          if (IDLE_PATTERN.test(allLines[i])) {
-            responseEnd = i;
-            break;
-          }
-        }
-
-        // Need both a response marker AND an idle prompt after it
-        if (!hasResponse || responseEnd === -1) continue;
-
-        // Extract and filter
-        const rawLines = allLines.slice(0, responseEnd);
-        const nonEmpty = rawLines.filter(l => l.trim());
-        const responseLines = rawLines
-          .filter(l => !isTuiNoise(l))
-          .map(l => l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  "));
-
-        const result = responseLines.join("\n").trim();
-        if (!result && nonEmpty.length > 0) {
-          log("warn", `sendAndWait: all ${nonEmpty.length} non-empty lines filtered as noise:`);
-          nonEmpty.slice(0, 5).forEach(l => log("warn", `  filtered: ${JSON.stringify(l)}`));
-        }
-        log("debug", `sendAndWait: prompt="${promptSlice}" response="${result.slice(0, 120)}" (${responseLines.length} lines, ${rawLines.length} raw, responseEnd=${responseEnd})`);
-        return result;
-      }
-
-      return "[Response timeout]";
-    } finally {
-      this._busy = false;
-      try { this.onTurnComplete?.(); } catch { /* intentional */ }
-    }
   }
 
   // ── Accessors ──
