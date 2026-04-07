@@ -21,6 +21,8 @@ const models = [
   "claude-haiku-4-5-20251001",
 ];
 
+const agentName = computed(() => config.value.name || "Claude");
+
 async function loadConfig() {
   try { config.value = await fetchConfig(); } catch {}
 }
@@ -274,7 +276,7 @@ const isWorking = computed(() => state.busy || state.agentBusy);
     <div ref="scrollEl" class="flex-grow-1 overflow-auto code-messages" style="min-height:0">
       <div v-if="!state.messages.length" class="h-100 d-flex flex-column align-items-center justify-content-center text-body-secondary px-4">
         <i class="bi bi-braces" style="font-size:40px;opacity:0.12"></i>
-        <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask Claude to write code, fix bugs, refactor, or explain.</p>
+        <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask {{ agentName }} to write code, fix bugs, refactor, or explain.</p>
       </div>
 
       <template v-for="(m, i) in state.messages" :key="i">
@@ -286,7 +288,7 @@ const isWorking = computed(() => state.busy || state.agentBusy);
 
         <!-- Assistant -->
         <div v-else-if="m.role === 'assistant'" class="msg msg-assistant">
-          <div class="msg-label">Claude</div>
+          <div class="msg-label">{{ agentName }}</div>
           <div class="msg-body msg-md">
             <div v-html="renderMd(m.content)" class="chat-md"></div>
             <button class="copy-btn" @click="copyText(m.content)" title="Copy"><i class="bi bi-clipboard"></i></button>
@@ -360,7 +362,7 @@ const isWorking = computed(() => state.busy || state.agentBusy);
 
       <form @submit.prevent="handleSend" class="code-input-form">
         <textarea ref="inputEl" v-model="input" :disabled="!state.connected"
-          placeholder="Ask Claude..." autofocus rows="1" class="code-input"
+          :placeholder="`Ask ${agentName}...`" autofocus rows="1" class="code-input"
           @keydown="handleKeydown" @input="autoResize"></textarea>
         <button type="submit" class="code-send-btn" :disabled="!state.connected || !input.trim()">
           <i class="bi bi-arrow-up"></i>
