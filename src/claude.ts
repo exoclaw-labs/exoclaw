@@ -774,12 +774,12 @@ export class Claude {
 
         // Everything after our prompt echo
         const afterEcho = pane.slice(echoIdx + promptEcho.length);
-
-        // Wait for the idle prompt to appear AFTER our echo
-        if (!IDLE_PATTERN.test(afterEcho)) continue;
-
-        // Split into lines and find the idle prompt
         const allLines = afterEcho.split("\n");
+
+        // Find the response start (● marker) — must appear before we accept idle prompt
+        const hasResponse = allLines.some(l => /^\s*●/.test(l) || /^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched)\s/.test(l));
+
+        // Find the idle prompt AFTER the response
         let responseEnd = -1;
         for (let i = allLines.length - 1; i >= 0; i--) {
           if (IDLE_PATTERN.test(allLines[i])) {
@@ -787,7 +787,9 @@ export class Claude {
             break;
           }
         }
-        if (responseEnd === -1) continue;
+
+        // Need both a response marker AND an idle prompt after it
+        if (!hasResponse || responseEnd === -1) continue;
 
         // Extract and filter
         const rawLines = allLines.slice(0, responseEnd);
