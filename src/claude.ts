@@ -49,6 +49,8 @@ function isTuiNoise(l: string): boolean {
   if (!t) return true;
   if (/^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(t)) return true;
   if (/^[╭╰│╮╯┌└┐┘├┤┬┴┼▐▝▛▜▘]/.test(t)) return true;
+  if (/[▐▛▜▌▝█▘]/.test(t)) return true; // Claude Code banner art (any position)
+  if (/~\/\w/.test(t) && t.length < 30) return true; // "~/workspace" path line
   if (/^\s*⏵⏵/.test(l)) return true;
   if (/bypass permissions/i.test(t)) return true;
   if (/[◐◑◒◓]/.test(t)) return true;
@@ -62,6 +64,8 @@ function isTuiNoise(l: string): boolean {
   if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★*]\s+\w/.test(t)) return true;
   // Status lines
   if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return true;
+  if (/Claude Code v\d/.test(t)) return true; // version banner
+  if (/·\s*Claude\s+(Max|Pro|Free)/i.test(t)) return true; // "Sonnet 4.6 · Claude Max"
   return false;
 }
 
