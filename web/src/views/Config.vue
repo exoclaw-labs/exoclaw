@@ -214,12 +214,11 @@ const mdPlaceholders: Record<string, string> = {
   "HEARTBEAT.md": "# Heartbeat\n\nPeriodic tasks to check on...",
 };
 
-const jsonFiles = [".mcp.json", "settings.json", "settings.local.json", "config.json"];
+const jsonFiles = [".mcp.json", "settings.local.json", "config.json"];
 
 const jsonDescriptions: Record<string, string> = {
   ".mcp.json": "Workspace MCP servers. Claude reads this natively. Servers from exoclaw config are merged here on startup.",
-  "settings.json": "Claude Code user settings (persisted in ~/.claude/).",
-  "settings.local.json": "Claude Code local settings override.",
+  "settings.local.json": "Claude Code project-level settings override (workspace/.claude/).",
   "config.json": "ExoClaw gateway configuration (the full config that drives everything).",
 };
 const msg = ref<{ type: string; text: string } | null>(null);
@@ -283,15 +282,12 @@ async function handleSave() {
 
     await saveConfig(config.value);
 
-    if (config.value.claude?.settingsJson) {
-      await saveClaudeFile("settings.json", JSON.stringify(config.value.claude.settingsJson, null, 2));
-    }
     if (config.value.claudeMd !== undefined) {
       await saveClaudeFile("CLAUDE.md", config.value.claudeMd);
     }
 
     for (const [name, content] of Object.entries(claudeFiles.value)) {
-      if (name === "settings.json" || name === "CLAUDE.md") {
+      if (name === "CLAUDE.md") {
         await saveClaudeFile(name, content);
       }
     }
@@ -323,9 +319,6 @@ async function restartSession() {
 
 function onClaudeFileEdit(name: string, content: string) {
   claudeFiles.value[name] = content;
-  if (name === "settings.json") {
-    try { config.value.claude.settingsJson = JSON.parse(content); } catch {}
-  }
   if (name === "CLAUDE.md") {
     config.value.claudeMd = content;
   }
