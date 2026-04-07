@@ -59,7 +59,6 @@ function setTheme(id: string) {
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: "bi-speedometer2" },
   { to: "/chat", label: "Chat", icon: "bi-chat-dots" },
-  { to: "/agents", label: "Agents", icon: "bi-robot" },
   { to: "/console", label: "Console", icon: "bi-terminal" },
 ];
 
@@ -69,7 +68,7 @@ const configSections = [
   { to: "/config/channels", label: "Channels", icon: "bi-broadcast" },
   { to: "/config/skills", label: "Skills", icon: "bi-lightning" },
   { to: "/config/json-files", label: "JSON Files", icon: "bi-braces" },
-  { to: "/config/markdown", label: "Markdown Files", icon: "bi-file-earmark-text" },
+  { to: "/config/agents", label: "Agents", icon: "bi-robot" },
 ];
 
 const isConfigPage = computed(() => route.path.startsWith("/config"));

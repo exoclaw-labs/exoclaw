@@ -42,6 +42,23 @@ export async function completeSetup(browserTool: string, browserApiKey?: string,
   })).json();
 }
 
+export async function fetchSubAgents(): Promise<{ name: string; filename: string; content: string }[]> {
+  const data = await (await fetch("/api/sub-agents")).json() as { agents: { name: string; filename: string; content: string }[] };
+  return data.agents || [];
+}
+
+export async function saveSubAgent(name: string, content: string, ext: "md" | "json" = "md") {
+  return (await fetch(`/api/sub-agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content, ext }),
+  })).json();
+}
+
+export async function deleteSubAgent(name: string) {
+  return (await fetch(`/api/sub-agents/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+}
+
 export function chatWsUrl(sessionId?: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${location.host}/ws/chat`;

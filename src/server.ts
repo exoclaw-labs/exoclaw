@@ -16,7 +16,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 import { Claude, type ClaudeConfig } from "./claude.js";
@@ -991,6 +991,64 @@ export function createApp(config: GatewayConfig) {
       log("error", `Failed to run on-demand agent '${name}': ${err}`);
       return c.json({ error: "run_failed", detail: String(err) }, 500);
     }
+  });
+
+  // ── Sub-agent Files API ──
+  // CRUD for agent definition files in ~/.claude/agents/
+
+  const agentsDir = join(workspaceDir, "workspace", ".claude", "agents");
+
+  app.get("/api/sub-agents", (c) => {
+    try {
+      mkdirSync(agentsDir, { recursive: true });
+      const files = readdirSync(agentsDir).filter(f => f.endsWith(".md") || f.endsWith(".json"));
+      const agents = files.map(f => {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        return { name: f.replace(/\.(md|json)$/, ""), filename: f, content };
+      });
+      return c.json({ agents });
+    } catch (err) {
+      return c.json({ agents: [] });
+    }
+  });
+
+  app.put("/api/sub-agents/:name", async (c) => {
+    const name = c.req.param("name");
+    // Sanitize name — only allow alphanumeric, hyphen, underscore
+    if (!/^[a-z0-9_-]+$/i.test(name)) {
+      return c.json({ error: "invalid_name", detail: "Agent name may only contain letters, numbers, hyphens, and underscores" }, 400);
+    }
+    try {
+      const { content, ext = "md" } = await c.req.json() as { content: string; ext?: string };
+      const filename = `${name}.${ext === "json" ? "json" : "md"}`;
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(join(agentsDir, filename), content);
+      audit.log({ event_type: "file_write", detail: `Updated sub-agent: ${filename}`, source: "api" });
+      return c.json({ status: "ok", name, filename });
+    } catch (err) {
+      return c.json({ error: "write_failed", detail: String(err) }, 500);
+    }
+  });
+
+  app.delete("/api/sub-agents/:name", (c) => {
+    const name = c.req.param("name");
+    if (!/^[a-z0-9_-]+$/i.test(name)) {
+      return c.json({ error: "invalid_name" }, 400);
+    }
+    // Try both .md and .json
+    let deleted = false;
+    for (const ext of ["md", "json"]) {
+      const fp = join(agentsDir, `${name}.${ext}`);
+      try {
+        if (existsSync(fp)) {
+          rmSync(fp);
+          deleted = true;
+          audit.log({ event_type: "file_write", detail: `Deleted sub-agent: ${name}.${ext}`, source: "api" });
+          break;
+        }
+      } catch {}
+    }
+    return deleted ? c.json({ status: "ok" }) : c.json({ error: "not_found" }, 404);
   });
 
   // ── Approvals API ──

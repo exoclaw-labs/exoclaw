@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { fetchConfig, saveConfig, fetchClaudeFiles, saveClaudeFile } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgent, deleteSubAgent } from "../composables/useApi";
 import Setup from "./Setup.vue";
 
 const route = useRoute();
@@ -85,6 +85,53 @@ function handleDrop(e: DragEvent) {
   }
 }
 
+// ── Sub-agents ──
+interface SubAgent { name: string; filename: string; content: string }
+const subAgents = ref<SubAgent[]>([]);
+const selectedAgent = ref<string>("__main__"); // "__main__" = main agent, or sub-agent name
+const subAgentContent = ref("");
+const newAgentName = ref("");
+const savingSubAgent = ref(false);
+
+async function loadSubAgents() {
+  subAgents.value = await fetchSubAgents();
+}
+
+function selectAgent(name: string) {
+  selectedAgent.value = name;
+  if (name !== "__main__") {
+    const a = subAgents.value.find(x => x.name === name);
+    subAgentContent.value = a?.content || "";
+  }
+}
+
+async function saveSelectedSubAgent() {
+  if (selectedAgent.value === "__main__") return;
+  savingSubAgent.value = true;
+  const ext = subAgents.value.find(x => x.name === selectedAgent.value)?.filename.endsWith(".json") ? "json" : "md";
+  await saveSubAgent(selectedAgent.value, subAgentContent.value, ext as "md" | "json");
+  await loadSubAgents();
+  savingSubAgent.value = false;
+  msg.value = { type: "success", text: `Agent "${selectedAgent.value}" saved.` };
+}
+
+async function createSubAgent() {
+  const name = newAgentName.value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "-");
+  if (!name) return;
+  const starter = `---\nname: ${name}\ndescription: \nschedule: \nmodel: claude-sonnet-4-6\n---\n\n# ${name}\n\nAgent prompt here...\n`;
+  await saveSubAgent(name, starter, "md");
+  newAgentName.value = "";
+  await loadSubAgents();
+  selectAgent(name);
+}
+
+async function removeSubAgent(name: string) {
+  if (!confirm(`Delete agent "${name}"?`)) return;
+  await deleteSubAgent(name);
+  if (selectedAgent.value === name) selectedAgent.value = "__main__";
+  await loadSubAgents();
+}
+
 const mdFiles = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "MEMORY.md", "HEARTBEAT.md"];
 
 const mdDescriptions: Record<string, string> = {
@@ -142,6 +189,7 @@ async function load() {
     claudeFiles.value = files;
     jsonText.value = JSON.stringify(cfg, null, 2);
     await loadSkills();
+    await loadSubAgents();
   } catch (e) {
     msg.value = { type: "danger", text: `Load failed: ${e}` };
   }
@@ -456,43 +504,113 @@ onMounted(load);
         <p class="text-body-secondary small mt-2">{{ jsonDescriptions[activeJsonFile] || '' }}</p>
       </div>
 
-      <!-- Markdown Files -->
-      <div v-if="section === 'markdown'">
-        <div v-if="showPersonaWizard">
-          <Setup :force-persona="true" @complete="showPersonaWizard = false; load()" />
-          <button class="btn btn-sm btn-outline-secondary mt-3" @click="showPersonaWizard = false; load()">
-            <i class="bi bi-arrow-left me-1"></i>Back to editor
-          </button>
-        </div>
-        <div v-else>
-          <div class="d-flex justify-content-between align-items-center mb-3">
-            <ul class="nav nav-tabs border-0 gap-1">
-              <li v-for="f in mdFiles" :key="f" class="nav-item">
-                <button class="nav-link small py-1 px-2" :class="{ active: activeMdFile === f }" @click="activeMdFile = f">
-                  {{ f }}
+      <!-- Agents -->
+      <div v-if="section === 'agents'">
+        <div class="row g-3">
+          <!-- Agent list -->
+          <div class="col-md-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <span class="small text-body-secondary fw-semibold">Agents</span>
+            </div>
+            <div class="list-group mb-2">
+              <!-- Main agent -->
+              <button
+                class="list-group-item list-group-item-action d-flex align-items-center gap-2"
+                :class="{ active: selectedAgent === '__main__' }"
+                @click="selectAgent('__main__')"
+              >
+                <i class="bi bi-cpu-fill" style="font-size:12px"></i>
+                <span class="small">Main Agent</span>
+                <span class="badge text-bg-primary ms-auto" style="font-size:10px">main</span>
+              </button>
+              <!-- Sub-agents -->
+              <button
+                v-for="a in subAgents" :key="a.name"
+                class="list-group-item list-group-item-action d-flex align-items-center gap-2"
+                :class="{ active: selectedAgent === a.name }"
+                @click="selectAgent(a.name)"
+              >
+                <i class="bi bi-robot" style="font-size:12px"></i>
+                <span class="small text-truncate flex-grow-1">{{ a.name }}</span>
+                <button class="btn btn-sm p-0 text-body-secondary" style="line-height:1" @click.stop="removeSubAgent(a.name)" title="Delete">
+                  <i class="bi bi-trash" style="font-size:11px"></i>
                 </button>
-              </li>
-            </ul>
-            <button v-if="activeMdFile === 'CLAUDE.md'" class="btn btn-sm btn-outline-primary" @click="showPersonaWizard = true">
-              <i class="bi bi-magic me-1"></i>Persona Wizard
-            </button>
+              </button>
+            </div>
+            <!-- New sub-agent -->
+            <form @submit.prevent="createSubAgent" class="input-group input-group-sm">
+              <input v-model="newAgentName" class="form-control" placeholder="new-agent-name" />
+              <button class="btn btn-outline-primary" type="submit" :disabled="!newAgentName.trim()" title="Create">
+                <i class="bi bi-plus"></i>
+              </button>
+            </form>
           </div>
 
-          <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-              <span class="small fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>workspace/{{ activeMdFile }}</span>
-              <span v-if="!claudeFiles[activeMdFile]" class="badge text-bg-secondary">not created</span>
+          <!-- Editor panel -->
+          <div class="col-md-9">
+            <!-- Main agent editor -->
+            <div v-if="selectedAgent === '__main__'">
+              <div v-if="showPersonaWizard">
+                <Setup :force-persona="true" @complete="showPersonaWizard = false; load()" />
+                <button class="btn btn-sm btn-outline-secondary mt-3" @click="showPersonaWizard = false; load()">
+                  <i class="bi bi-arrow-left me-1"></i>Back to editor
+                </button>
+              </div>
+              <div v-else>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
+                    <li v-for="f in mdFiles" :key="f" class="nav-item">
+                      <button class="nav-link small py-1 px-2" :class="{ active: activeMdFile === f }" @click="activeMdFile = f">
+                        {{ f }}
+                      </button>
+                    </li>
+                  </ul>
+                  <button v-if="activeMdFile === 'CLAUDE.md'" class="btn btn-sm btn-outline-primary ms-2 flex-shrink-0" @click="showPersonaWizard = true">
+                    <i class="bi bi-magic me-1"></i>Persona Wizard
+                  </button>
+                </div>
+                <div class="card">
+                  <div class="card-header d-flex justify-content-between align-items-center">
+                    <span class="small fw-semibold"><i class="bi bi-file-earmark-text me-1"></i>workspace/{{ activeMdFile }}</span>
+                    <span v-if="!claudeFiles[activeMdFile]" class="badge text-bg-secondary">not created</span>
+                  </div>
+                  <div class="card-body p-0">
+                    <textarea
+                      :value="claudeFiles[activeMdFile] || ''"
+                      @input="(e: any) => onClaudeFileEdit(activeMdFile, e.target.value)"
+                      rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
+                      :placeholder="mdPlaceholders[activeMdFile] || `# ${activeMdFile}`"
+                    ></textarea>
+                  </div>
+                </div>
+                <p class="text-body-secondary small mt-2">{{ mdDescriptions[activeMdFile] || 'Workspace file read by Claude on startup.' }}</p>
+              </div>
             </div>
-            <div class="card-body p-0">
-              <textarea
-                :value="claudeFiles[activeMdFile] || ''"
-                @input="(e: any) => onClaudeFileEdit(activeMdFile, e.target.value)"
-                rows="20" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
-                :placeholder="mdPlaceholders[activeMdFile] || `# ${activeMdFile}`"
-              ></textarea>
+
+            <!-- Sub-agent editor -->
+            <div v-else>
+              <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                  <span class="small fw-semibold">
+                    <i class="bi bi-robot me-1"></i>
+                    .claude/agents/{{ subAgents.find(x => x.name === selectedAgent)?.filename || selectedAgent + '.md' }}
+                  </span>
+                  <button class="btn btn-sm btn-primary" :disabled="savingSubAgent" @click="saveSelectedSubAgent">
+                    <i class="bi bi-save me-1"></i>{{ savingSubAgent ? 'Saving...' : 'Save' }}
+                  </button>
+                </div>
+                <div class="card-body p-0">
+                  <textarea
+                    v-model="subAgentContent"
+                    rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
+                  ></textarea>
+                </div>
+              </div>
+              <p class="text-body-secondary small mt-2">
+                Sub-agent definition. YAML frontmatter sets <code>name</code>, <code>description</code>, <code>schedule</code>, and <code>model</code>. Body is the agent's prompt.
+              </p>
             </div>
           </div>
-          <p class="text-body-secondary small mt-2">{{ mdDescriptions[activeMdFile] || 'Workspace file read by Claude on startup.' }}</p>
         </div>
       </div>
 
