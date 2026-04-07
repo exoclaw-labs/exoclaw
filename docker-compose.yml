@@ -9,23 +9,55 @@
 # CLAUDE_CONFIG_DIR is set in the Dockerfile and intentionally omitted here.
 
 x-claude-env: &claude-env
-  # Auth — pass API key from host env, or leave unset to use `claude login`
+  # ── Auth ──────────────────────────────────────────────────────────────────
+  # Pass API key from host env, or leave unset to use `claude login`
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
 
-  # Model — leave empty to use the Dockerfile/config default
+  # ── Model ─────────────────────────────────────────────────────────────────
+  # Leave empty to use the config/settings default
   CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+  # Model for sub-agents (claude -p jobs); defaults to CLAUDE_MODEL if unset
+  CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
 
-  # Headless / tmux-friendly — suppress interactive UI elements
+  # ── Agent teams (experimental) ────────────────────────────────────────────
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "true"
+  CLAUDE_CODE_TEAM_NAME: ${CLAUDE_CODE_TEAM_NAME:-exoclaw}
+
+  # ── Headless / tmux-friendly ──────────────────────────────────────────────
   CLAUDE_CODE_DISABLE_MOUSE: "1"
   CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1"
   CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL: "1"
   CLAUDE_CODE_NO_FLICKER: "1"
   CLAUDE_CODE_ACCESSIBILITY: "0"
 
-  # Context injection — extra files or a custom CLAUDE.md path
+  # ── Telemetry / updates ───────────────────────────────────────────────────
+  DISABLE_TELEMETRY: "true"
+  DISABLE_ERROR_REPORTING: "true"
+  DISABLE_AUTOUPDATER: "true"
+  DISABLE_COST_WARNINGS: ${DISABLE_COST_WARNINGS:-false}
+
+  # ── Timeouts & retries ────────────────────────────────────────────────────
+  API_TIMEOUT_MS: ${API_TIMEOUT_MS:-600000}
+  CLAUDE_CODE_MAX_RETRIES: ${CLAUDE_CODE_MAX_RETRIES:-10}
+  BASH_DEFAULT_TIMEOUT_MS: ${BASH_DEFAULT_TIMEOUT_MS:-120000}
+  BASH_MAX_TIMEOUT_MS: ${BASH_MAX_TIMEOUT_MS:-600000}
+  CLAUDE_ENABLE_STREAM_WATCHDOG: "true"
+  CLAUDE_STREAM_IDLE_TIMEOUT_MS: ${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-90000}
+
+  # ── Context & compaction ──────────────────────────────────────────────────
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-95}
+
+  # ── Output ────────────────────────────────────────────────────────────────
+  BASH_MAX_OUTPUT_LENGTH: ${BASH_MAX_OUTPUT_LENGTH:-}
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}
+
+  # ── Context injection ─────────────────────────────────────────────────────
   CLAUDE_MD_PATH: ${CLAUDE_MD_PATH:-}
   CLAUDE_FILES: ${CLAUDE_FILES:-}
+
+  # ── Debug logging (opt-in) ────────────────────────────────────────────────
+  CLAUDE_CODE_DEBUG_LOG_LEVEL: ${CLAUDE_CODE_DEBUG_LOG_LEVEL:-info}
 
 
 services:
