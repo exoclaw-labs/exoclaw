@@ -40,6 +40,7 @@ import { startWhatsApp, handleWhatsAppVerify, handleWhatsAppEvent } from "./chan
 import { syncClaudeMd } from "./claude-md.js";
 import { PROJECT_DIR_SUFFIX } from "./constants.js";
 import { GatewayConfigSchema } from "./schemas.js";
+import { AgentRegistry } from "./agent-registry.js";
 
 // ── Schemas ──
 
@@ -933,69 +934,58 @@ export function createApp(config: GatewayConfig) {
     return c.json({ results, vector_enabled: embeddingStore.isEnabled });
   });
 
-  // ── Agents API (Claude.ai scheduled triggers) ──
+  // ── Agent Registry (file-based agent definitions) ──
 
-  app.get("/api/agents", async (c) => {
-    try {
-      const cfg = loadConfig();
-      const token: string | undefined =
-        cfg.claudeApiToken || process.env.CLAUDE_API_TOKEN;
+  const registry = new AgentRegistry(scheduler);
 
-      if (!token) {
-        return c.json({ triggers: [], unconfigured: true });
-      }
-
-      const res = await fetch("https://claude.ai/api/v1/code/triggers", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!res.ok) {
-        log("warn", `Claude.ai triggers API returned ${res.status}`);
-        return c.json({ triggers: [], error: `upstream_${res.status}` });
-      }
-
-      const data = await res.json() as { triggers?: unknown[] };
-      return c.json({ triggers: data.triggers ?? data ?? [] });
-    } catch (err) {
-      log("warn", `Failed to fetch triggers: ${err}`);
-      return c.json({ triggers: [], error: "fetch_failed" });
-    }
+  app.get("/api/agents", (c) => {
+    const agents = registry.listAgents().map(a => ({
+      name: a.name,
+      description: a.description,
+      schedule: a.schedule,
+      hasPrompt: a.hasPrompt,
+      cronJobId: a.cronJobId,
+    }));
+    return c.json({ agents });
   });
 
-  app.post("/api/agents/:id/run", async (c) => {
+  app.post("/api/agents/:name/run", async (c) => {
+    const name = c.req.param("name");
+    const agent = registry.getAgent(name);
+
+    if (!agent) {
+      return c.json({ error: "not_found", detail: `No agent named '${name}'` }, 404);
+    }
+
+    // If agent has a scheduled cron job, trigger it immediately
+    if (agent.cronJobId) {
+      const ok = scheduler.runNow(agent.cronJobId);
+      if (!ok) {
+        return c.json({ error: "already_running", detail: "Agent job is already running" }, 409);
+      }
+      audit.log({ event_type: "cron_run", detail: `Manual agent run: ${name} (job ${agent.cronJobId})`, source: "api" });
+      return c.json({ status: "ok", mode: "scheduled", jobId: agent.cronJobId });
+    }
+
+    // On-demand only agent — spawn via a transient one-shot cron job
+    if (!agent.hasPrompt) {
+      return c.json({ error: "no_prompt", detail: "Agent has no prompt body" }, 400);
+    }
+
     try {
-      const id = c.req.param("id");
-      const cfg = loadConfig();
-      const token: string | undefined =
-        cfg.claudeApiToken || process.env.CLAUDE_API_TOKEN;
-
-      if (!token) {
-        return c.json({ error: "unconfigured", detail: "claudeApiToken not set" }, 400);
-      }
-
-      const res = await fetch(`https://claude.ai/api/v1/code/triggers/${encodeURIComponent(id)}/run`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+      const job = scheduler.createJob({
+        name: `${agent.name}-ondemand`,
+        job_type: "prompt",
+        schedule: `now + 1s`,
+        command: agent.prompt,
+        model: agent.model,
       });
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        log("warn", `Trigger run ${id} returned ${res.status}: ${body}`);
-        return c.json({ error: `upstream_${res.status}`, detail: body }, 502);
-      }
-
-      const result = await res.json().catch(() => ({ status: "ok" }));
-      audit.log({ event_type: "cron_run", detail: `Manual trigger run: ${id}`, source: "api" });
-      return c.json(result);
+      scheduler.runNow(job.id);
+      audit.log({ event_type: "cron_run", detail: `Manual on-demand agent run: ${name}`, source: "api" });
+      return c.json({ status: "ok", mode: "on_demand", jobId: job.id });
     } catch (err) {
-      log("error", `Trigger run failed: ${err}`);
-      return c.json({ error: "fetch_failed", detail: String(err) }, 500);
+      log("error", `Failed to run on-demand agent '${name}': ${err}`);
+      return c.json({ error: "run_failed", detail: String(err) }, 500);
     }
   });
 
