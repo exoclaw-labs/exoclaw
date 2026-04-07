@@ -65,10 +65,10 @@ const nav = [
 const configSections = [
   { to: "/config", label: "Setup", icon: "bi-key" },
   { to: "/config/general", label: "General", icon: "bi-sliders" },
+  { to: "/config/agents", label: "Agents", icon: "bi-robot" },
   { to: "/config/channels", label: "Channels", icon: "bi-broadcast" },
   { to: "/config/skills", label: "Skills", icon: "bi-lightning" },
   { to: "/config/json-files", label: "JSON Files", icon: "bi-braces" },
-  { to: "/config/agents", label: "Agents", icon: "bi-robot" },
 ];
 
 const isConfigPage = computed(() => route.path.startsWith("/config"));
