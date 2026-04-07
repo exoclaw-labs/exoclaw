@@ -754,10 +754,9 @@ export class Claude {
             if (/shift\+tab to cycle/i.test(t)) return false;
             if (/ctrl\+o to expand/i.test(t)) return false;
             if (/\? for shortcu/.test(t)) return false;
-            // Spinner tips: "● Flowing...", "● Thinking deeply..." — decorative single-line hints
-            // Keep lines like "● 10" or "● Here is the answer" (actual responses)
-            if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w/.test(t)) return false;  // non-● spinner chars are always noise
-            if (/^●\s+[A-Z][a-z]+(?:\s[a-z]+)*\.{0,3}$/.test(t) && t.length < 30) return false; // "● Flowing..."
+            // Spinner decorations (non-● chars) — always noise
+            if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w/.test(t)) return false;
+            // Note: ● marks the START of assistant responses — never filter it
             // Status lines
             if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return false;
             return true;

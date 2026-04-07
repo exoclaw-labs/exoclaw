@@ -320,8 +320,8 @@ const chatBlocks = computed((): ChatBlock[] => {
       continue;
     }
 
-    // Thinking indicator — skip
-    if (/\(thinking\)/.test(line) || /^\s*●\s/.test(line)) { i++; continue; }
+    // Thinking indicator — skip (but NOT ● which marks assistant response start)
+    if (/\(thinking\)/.test(line)) { i++; continue; }
 
     // Empty line — skip (but preserve inside assistant blocks below)
     if (!line.trim()) { i++; continue; }
@@ -336,7 +336,7 @@ const chatBlocks = computed((): ChatBlock[] => {
       if (/^❯/.test(l)) break;
       if (isToolLine(l)) break;
       if (isNoise(l)) { i++; continue; }
-      if (/\(thinking\)/.test(l) || /^\s*●\s/.test(l)) { i++; continue; }
+      if (/\(thinking\)/.test(l)) { i++; continue; }
       // Strip TUI bullet prefix but preserve the text
       const cleaned = l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  ");
       textLines.push(cleaned);
