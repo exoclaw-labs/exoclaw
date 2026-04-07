@@ -185,6 +185,7 @@ export class Claude {
    */
   private async autoAcceptPrompts(): Promise<void> {
     let ready = false;
+    let remoteControlEnabled = false;
 
     let busySince: number | null = null;
 
@@ -217,7 +218,24 @@ export class Claude {
 
         // Already at idle prompt
         if (IDLE_PATTERN.test(pane)) {
-          if (!ready) { ready = true; log("info", "Claude interactive session ready"); }
+          if (!ready) {
+            ready = true;
+            log("info", "Claude interactive session ready");
+          }
+          // Enable remote control once after session is ready
+          if (!remoteControlEnabled && !pane.includes("/remote-control is active")) {
+            remoteControlEnabled = true;
+            log("info", "Enabling remote control via /remote-control");
+            execSync(`tmux send-keys -t ${TMUX_SESSION} "/remote-control" Enter`);
+          }
+          // Capture remote control URL if visible
+          if (!this._remoteControlUrl) {
+            const envMatch = pane.match(/environment=(env_[a-zA-Z0-9]+)/);
+            if (envMatch) {
+              this._remoteControlUrl = `https://claude.ai/code?environment=${envMatch[1]}`;
+              log("info", `Remote control URL: ${this._remoteControlUrl}`);
+            }
+          }
           return;
         }
 
@@ -271,6 +289,13 @@ export class Claude {
         ) {
           log("info", "Auto-accepting interactive prompt");
           execSync(`tmux send-keys -t ${TMUX_SESSION} Enter`);
+          return;
+        }
+
+        // Remote control confirmation — auto-accept "Enable Remote Control? (y/n)"
+        if (pane.includes("Enable Remote Control?")) {
+          log("info", "Auto-accepting remote control prompt");
+          execSync(`tmux send-keys -t ${TMUX_SESSION} y`);
           return;
         }
 
