@@ -699,6 +699,68 @@ export class Claude {
     return path;
   }
 
+  /**
+   * Send a prompt via tmux keystrokes and wait for the response by polling
+   * the pane until the idle prompt (❯) reappears. Returns the extracted
+   * response text. This is the simplest integration path — the message
+   * appears naturally in the Claude Code TUI session.
+   */
+  async sendAndWait(prompt: string, timeoutMs = 5 * 60 * 1000): Promise<string> {
+    if (this._busy) throw new Error("Session is busy");
+    this._busy = true;
+
+    try {
+      // Snapshot pane before sending so we can find new content
+      const beforePane = this.capturePane();
+      const beforeLines = beforePane.split("\n").length;
+
+      this.sendKeys(prompt);
+      await sleep(1500);
+
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeoutMs) {
+        await sleep(POLL_INTERVAL_MS);
+        const pane = this.capturePane();
+
+        // Look for the idle prompt after our input
+        // Find our prompt echo, then look for content after it and a new ❯
+        const promptEcho = `❯ ${prompt.slice(0, 40)}`;
+        const echoIdx = pane.lastIndexOf(promptEcho);
+        if (echoIdx === -1) continue;
+
+        const afterEcho = pane.slice(echoIdx);
+        // Check if there's a new idle prompt after the response
+        const lines = afterEcho.split("\n");
+        let responseEnd = -1;
+        for (let i = lines.length - 1; i >= 1; i--) {
+          if (IDLE_PATTERN.test(lines[i])) {
+            responseEnd = i;
+            break;
+          }
+        }
+        if (responseEnd === -1) continue; // Still working
+
+        // Extract response: everything between the prompt echo line and the idle prompt
+        const responseLines = lines.slice(1, responseEnd)
+          .filter(l =>
+            l.trim() &&
+            !/^[─━\u2500\u2501]{3,}/.test(l) &&
+            !/^\s*⏵⏵/.test(l) &&
+            !/bypass permissions/i.test(l) &&
+            !/[◐◑◒◓]/.test(l)
+          )
+          .map(l => l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  "));
+
+        return responseLines.join("\n").trim();
+      }
+
+      return "[Response timeout]";
+    } finally {
+      this._busy = false;
+      try { this.onTurnComplete?.(); } catch { /* intentional */ }
+    }
+  }
+
   // ── Accessors ──
 
   get alive(): boolean { return this._alive; }

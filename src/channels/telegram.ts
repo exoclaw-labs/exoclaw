@@ -1,5 +1,7 @@
 /**
  * Telegram bot adapter — long-polling, no webhook setup needed.
+ * Uses tmux send-keys + capture-pane so messages appear naturally
+ * in the Claude Code session.
  *
  * Env: TELEGRAM_BOT_TOKEN
  */
@@ -55,13 +57,7 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
       body: JSON.stringify({ chat_id: chatId, action: "typing" }),
     });
 
-    const chunks: string[] = [];
-    let doneText = "";
-    for await (const ev of claude.send(prompt)) {
-      if (ev.type === "chunk") chunks.push(ev.content);
-      if (ev.type === "done") doneText = ev.content;
-    }
-    let response = doneText || chunks.join("");
+    let response = await claude.sendAndWait(prompt);
 
     // Scan for credential leaks before sending
     const { scanForLeaks } = await import("../content-scanner.js");
@@ -70,6 +66,8 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
       log("warn", `Credential leak blocked in Telegram response: ${leak.reason}`);
       response = "[Response redacted — contained sensitive credentials]";
     }
+
+    if (!response) response = "[No response]";
 
     for (const chunk of splitMsg(response, 4096)) {
       await fetch(`${API}/sendMessage`, {
@@ -80,6 +78,14 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
     }
   } catch (err) {
     log("error", `Telegram send failed: ${err}`);
+    // Send error to user so they know something went wrong
+    try {
+      await fetch(`${API}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: `Error: ${err}`, reply_to_message_id: msg.message_id }),
+      });
+    } catch { /* best effort */ }
   }
 }
 

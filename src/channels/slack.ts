@@ -50,13 +50,7 @@ async function processEvent(event: any, claude: Claude): Promise<void> {
 
   const channel = event.channel;
   try {
-    const chunks: string[] = [];
-    let doneText = "";
-    for await (const ev of claude.send(prompt)) {
-      if (ev.type === "chunk") chunks.push(ev.content);
-      if (ev.type === "done") doneText = ev.content;
-    }
-    let response = doneText || chunks.join("");
+    let response = await claude.sendAndWait(prompt);
 
     // Scan for credential leaks before sending
     const { scanForLeaks } = await import("../content-scanner.js");
