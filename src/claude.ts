@@ -307,25 +307,33 @@ export class Claude {
   }
 
   private saveSessionId(): void {
-    // Capture session ID and remote control URL from the tmux pane after startup
+    // Wait for Claude to create a JSONL file, then save its UUID as the active session
     setTimeout(() => {
       try {
-        const pane = this.capturePane();
-        const match = pane.match(/session_([a-zA-Z0-9]+)/);
-        if (match) {
+        const projectDir = join(
+          join(process.env.HOME || "/home/agent", ".claude"),
+          "projects", PROJECT_DIR_SUFFIX
+        );
+        const files = readdirSync(projectDir)
+          .filter(f => f.endsWith(".jsonl") && !f.includes("/"))
+          .map(f => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length > 0) {
+          const sessionId = files[0].name.replace(".jsonl", "");
           const dir = join(process.env.HOME || "/tmp", ".exoclaw");
           mkdirSync(dir, { recursive: true });
-          writeFileSync(this.sessionFilePath, match[0]);
-          log("info", `Saved session ID: ${match[0]}`);
+          writeFileSync(this.sessionFilePath, sessionId);
+          log("info", `Saved session ID: ${sessionId}`);
         }
-        // Capture remote control URL (printed by Claude Code at startup)
+        // Capture remote control URL from the tmux pane
+        const pane = this.capturePane();
         const rcMatch = pane.match(/(https:\/\/claude\.ai\/code\/remote-control[^\s]*)/);
         if (rcMatch) {
           this._remoteControlUrl = rcMatch[1];
           log("info", `Captured remote control URL`);
         }
       } catch { /* intentional */ }
-    }, 15000); // Wait for session to fully start
+    }, 15000);
   }
 
   private buildArgs(): string[] {
@@ -336,12 +344,12 @@ export class Claude {
       // MCP servers are configured in workspace/.mcp.json — Claude reads it natively
     ];
 
-    // Continue most recent session (preserves remote control URL + context)
+    // Resume a specific session by UUID, or start fresh if no saved ID
     try {
       const savedId = readFileSync(this.sessionFilePath, "utf-8").trim();
       if (savedId) {
-        args.push("--continue");
-        log("info", `Continuing previous session`);
+        args.push("--resume", savedId);
+        log("info", `Resuming session: ${savedId.slice(0, 8)}...`);
       }
     } catch { /* no saved session, starts fresh */ }
 
@@ -745,13 +753,28 @@ export class Claude {
     setTimeout(() => this.respawn(), 1000);
   }
 
-  /** Kill session and start completely fresh — no --continue, no session history. */
+  /** Kill session and start completely fresh — no --resume, no session history. */
   freshStart(): void {
     log("info", "Starting fresh Claude session");
     this.close();
-    // Remove saved session ID so buildArgs() won't add --continue
     try { unlinkSync(this.sessionFilePath); } catch { /* intentional */ }
     setTimeout(() => this.respawn(), 1000);
+  }
+
+  /** Switch to a specific session by UUID. */
+  switchSession(sessionId: string): void {
+    log("info", `Switching to session: ${sessionId}`);
+    this.close();
+    const dir = join(process.env.HOME || "/tmp", ".exoclaw");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(this.sessionFilePath, sessionId);
+    setTimeout(() => this.respawn(), 1000);
+  }
+
+  /** Get the currently active session UUID. */
+  get activeSessionId(): string | null {
+    try { return readFileSync(this.sessionFilePath, "utf-8").trim() || null; }
+    catch { return null; }
   }
 
   close(): void {

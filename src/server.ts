@@ -259,6 +259,16 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: "ok" });
   });
 
+  app.post("/api/session/switch", async (c) => {
+    const { sessionId } = await c.req.json() as { sessionId: string };
+    if (!sessionId || !/^[a-f0-9-]{36}$/.test(sessionId)) {
+      return c.json({ error: "invalid_session_id" }, 400);
+    }
+    audit.log({ event_type: "session", detail: `Switched to session ${sessionId}`, source: "api" });
+    claude.switchSession(sessionId);
+    return c.json({ status: "ok" });
+  });
+
   // ── Session history (parsed from tmux pane) ──
 
   app.get("/api/session/history", (c) => {
@@ -534,7 +544,11 @@ export function createApp(config: GatewayConfig) {
   app.get("/api/sessions", (c) => {
     const limit = parseInt(c.req.query("limit") || "50");
     const offset = parseInt(c.req.query("offset") || "0");
-    return c.json({ sessions: sessionDb.listSessions(limit, offset) });
+    const sessions = sessionDb.listSessions(limit, offset).map((s: any) => ({
+      ...s,
+      uuid: s.file_path?.split("/").pop()?.replace(".jsonl", "") || null,
+    }));
+    return c.json({ sessions, activeSessionId: claude.activeSessionId });
   });
 
   app.get("/api/sessions/search", (c) => {

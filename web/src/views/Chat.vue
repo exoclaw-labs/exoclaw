@@ -117,6 +117,27 @@ async function freshSession() {
   restartNeeded.value = false;
 }
 
+// ── Session switcher ──
+const sessions = ref<Array<{ uuid: string; title: string | null; started_at: string; message_count: number }>>([]);
+const activeSessionId = ref<string | null>(null);
+
+async function loadSessions() {
+  try {
+    const data = await (await fetch("/api/sessions?limit=15")).json();
+    sessions.value = data.sessions || [];
+    activeSessionId.value = data.activeSessionId;
+  } catch {}
+}
+
+async function switchSession(uuid: string) {
+  closeAllPopups();
+  try { await fetch("/api/session/switch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: uuid }),
+  }); } catch {}
+}
+
 // ── Slash commands ──
 const showSlash = ref(false);
 const customSkills = ref<{ name: string; content: string }[]>([]);
@@ -478,7 +499,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="popup-anchor">
-          <button class="mode-bar-btn" @click.stop="showModes = !showModes; showSlash = false">
+          <button class="mode-bar-btn" @click.stop="showModes = !showModes; showSlash = false; if (showModes) loadSessions()">
             <span class="mode-bar-model">{{ currentModel }}</span>
             <i class="bi bi-chevron-up" style="font-size:9px"></i>
           </button>
@@ -497,13 +518,25 @@ onUnmounted(() => {
               <i v-if="thinkingLevel === t.value" class="bi bi-check2 ms-auto"></i>
             </button>
             <div class="popup-divider"></div>
-            <div class="popup-section-label">Session</div>
+            <div class="popup-section-label">Sessions</div>
+            <div class="popup-scroll" style="max-height:140px">
+              <button v-for="s in sessions" :key="s.uuid" class="popup-item"
+                :class="{ active: s.uuid === activeSessionId }"
+                @click="switchSession(s.uuid)">
+                <i class="bi bi-chat-left-text"></i>
+                <span class="session-title">{{ s.title || s.uuid?.slice(0, 8) }}</span>
+                <span class="popup-item-desc">{{ s.message_count }}msg</span>
+                <i v-if="s.uuid === activeSessionId" class="bi bi-check2 ms-auto"></i>
+              </button>
+              <div v-if="!sessions.length" class="popup-empty">No sessions</div>
+            </div>
+            <div class="popup-divider"></div>
+            <div class="popup-section-label">Controls</div>
             <button class="popup-item" @click="toggleRemoteControl">
               <i class="bi bi-broadcast"></i>
               <span>Remote control</span>
               <i class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
             </button>
-            <div class="popup-divider"></div>
             <button class="popup-item" @click="restartSession">
               <i class="bi bi-arrow-clockwise"></i>
               <span>Restart session</span>
@@ -683,6 +716,7 @@ onUnmounted(() => {
 .popup-item .bi { font-size: 12px; flex-shrink: 0; }
 .popup-item-desc { font-size: 10px; color: var(--bs-tertiary-color); margin-left: auto; }
 .slash-name { font-weight: 500; font-family: var(--bs-font-monospace); font-size: 12px; }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
 .slash-popup { min-width: 300px; max-width: 360px; }
 .popup-section-label { padding: 6px 10px 2px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--bs-tertiary-color); }
 .popup-divider { height: 1px; background: var(--bs-border-color); margin: 4px 0; }
