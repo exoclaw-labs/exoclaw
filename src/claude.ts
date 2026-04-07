@@ -50,6 +50,7 @@ export class Claude {
   private _alive = false;
   private channelAvailable = false;
   private _remoteControlUrl: string | null = null;
+  private _remoteControlEnabled = false;
 
   /** Called after each turn completes. Set by the gateway to trigger background review. */
   onTurnComplete: (() => void) | null = null;
@@ -136,6 +137,8 @@ export class Claude {
 
   /** Respawn the tmux session after a crash. */
   private respawn(): void {
+    this._remoteControlEnabled = false;
+    this._remoteControlUrl = null;
     try { execSync(`tmux kill-session -t ${TMUX_SESSION} 2>/dev/null`); } catch (err) {
       log("debug", `tmux kill-session (pre-respawn cleanup): ${err}`);
     }
@@ -185,7 +188,8 @@ export class Claude {
    */
   private async autoAcceptPrompts(): Promise<void> {
     let ready = false;
-    let remoteControlEnabled = false;
+    // Use class property so it resets properly across respawns
+    this._remoteControlEnabled = false;
 
     let busySince: number | null = null;
 
@@ -223,8 +227,8 @@ export class Claude {
             log("info", "Claude interactive session ready");
           }
           // Enable remote control once after session is ready
-          if (!remoteControlEnabled && !pane.includes("/remote-control is active")) {
-            remoteControlEnabled = true;
+          if (!this._remoteControlEnabled && !pane.includes("/remote-control is active")) {
+            this._remoteControlEnabled = true;
             log("info", "Enabling remote control via /remote-control");
             execSync(`tmux send-keys -t ${TMUX_SESSION} "/remote-control" Enter`);
           }
