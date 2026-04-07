@@ -1,25 +1,15 @@
-# exoclaw — each service is one human's Claude Code gateway.
+# Additional exoclaw agents — one container per human.
 #
-# Each container runs a single persistent Claude Code session with
-# channel interfaces. No shared config between agents — each is its
-# own entity interacting with a different human.
-#
-# Claude env vars are collected here so they're easy to override and
-# are automatically inherited by sub-agent processes (claude -p jobs).
-# CLAUDE_CONFIG_DIR is NOT set — Claude Code uses its default ~/.claude for
-# user-level config (credentials, settings, sessions). Project-level config
-# (agents, skills) lives in ~/workspace/.claude and is discovered natively.
+# x-claude-env is duplicated from docker-compose.yml because YAML
+# anchors don't carry across files.
 
 x-claude-env: &claude-env
   # ── Auth ──────────────────────────────────────────────────────────────────
-  # Pass API key from host env, or leave unset to use `claude login`
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
 
   # ── Model ─────────────────────────────────────────────────────────────────
-  # Leave empty to use the config/settings default
   CLAUDE_MODEL: ${CLAUDE_MODEL:-}
-  # Model for sub-agents (claude -p jobs); defaults to CLAUDE_MODEL if unset
   CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
 
   # ── Agent teams (experimental) ────────────────────────────────────────────
@@ -60,25 +50,35 @@ x-claude-env: &claude-env
   # ── Debug logging (opt-in) ────────────────────────────────────────────────
   CLAUDE_CODE_DEBUG_LOG_LEVEL: ${CLAUDE_CODE_DEBUG_LOG_LEVEL:-info}
 
+x-agent-defaults: &agent-defaults
+  build: .
+  restart: unless-stopped
+  shm_size: "2gb"
+  environment:
+    <<: *claude-env
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw 1})"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 15s
 
 services:
-  exoclaw:
-    build: .
-    container_name: exoclaw
-    restart: unless-stopped
-    ports: ["8080:8080"]
-    shm_size: "2gb"
-    environment:
-      <<: *claude-env
-    volumes:
-      - exoclaw-data:/home/agent
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw 1})"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
 
+  gregclaw:
+    <<: *agent-defaults
+    container_name: gregclaw
+    ports: ["8081:8080"]
+    volumes:
+      - gregclaw-data:/home/agent
+
+  linda:
+    <<: *agent-defaults
+    container_name: linda
+    ports: ["8082:8080"]
+    volumes:
+      - lindaclaw-data:/home/agent
 
 volumes:
-  exoclaw-data:
+  gregclaw-data:
+  lindaclaw-data:
