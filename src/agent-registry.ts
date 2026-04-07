@@ -1,7 +1,7 @@
 /**
  * Agent Registry — file-based agent definitions.
  *
- * Reads agent definition files from ~/.exoclaw/agents/*.md
+ * Reads agent definition files from ~/workspace/.claude/agents/*.md
  * Parses YAML frontmatter + markdown body.
  * Registers agents with the cron scheduler (idempotent).
  * Watches directory for changes and hot-reloads (500ms debounce).
@@ -39,7 +39,7 @@ export interface AgentDefinition {
   filePath: string;
 }
 
-const AGENTS_DIR = join(process.env.HOME || "/home/agent", ".exoclaw", "agents");
+const AGENTS_DIR = join(process.env.HOME || "/home/agent", "workspace", ".claude", "agents");
 
 /** Parse YAML frontmatter + markdown body from an agent file */
 function parseAgentFile(filePath: string): AgentDefinition | null {
