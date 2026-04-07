@@ -188,10 +188,30 @@ export class Claude {
   private async autoAcceptPrompts(): Promise<void> {
     let ready = false;
 
+    let busySince: number | null = null;
+
     const tick = async () => {
       if (!this._alive) return;
-      // Don't interfere while a message is being processed
-      if (this._busy) return;
+
+      // Busy watchdog: if tmux shows idle prompt but _busy is stuck, force-clear it
+      if (this._busy) {
+        try {
+          const pane = this.capturePane();
+          if (pane && IDLE_PATTERN.test(pane)) {
+            if (!busySince) {
+              busySince = Date.now();
+            } else if (Date.now() - busySince > 10_000) {
+              log("warn", "Busy flag stuck while Claude is idle — force-clearing");
+              this._busy = false;
+              busySince = null;
+            }
+          } else {
+            busySince = null; // Claude is actually working
+          }
+        } catch { /* intentional */ }
+        return;
+      }
+      busySince = null;
 
       try {
         const pane = this.capturePane();
