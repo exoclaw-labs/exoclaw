@@ -8,10 +8,12 @@ import { createHmac, timingSafeEqual } from "crypto";
 import type { Context } from "hono";
 import type { Claude } from "../claude.js";
 
-const BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
-const SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
+let BOT_TOKEN = "";
+let SIGNING_SECRET = "";
 
 export function startSlack(): void {
+  BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
+  SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
   if (!BOT_TOKEN) log("warn", "SLACK_BOT_TOKEN not set");
   else log("info", "Slack channel enabled");
 }

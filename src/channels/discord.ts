@@ -6,11 +6,12 @@
 
 import type { Claude } from "../claude.js";
 
-const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+let BOT_TOKEN = "";
 const API = "https://discord.com/api/v10";
 let botUserId: string | null = null;
 
 export function startDiscord(claude: Claude): void {
+  BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
   if (!BOT_TOKEN) {
     log("warn", "DISCORD_BOT_TOKEN not set");
     return;

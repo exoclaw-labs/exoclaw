@@ -6,14 +6,15 @@
 
 import type { Claude } from "../claude.js";
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const API = BOT_TOKEN ? `https://api.telegram.org/bot${BOT_TOKEN}` : "";
+let API = "";
 
 export function startTelegram(claude: Claude): void {
-  if (!BOT_TOKEN) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
     log("warn", "TELEGRAM_BOT_TOKEN not set");
     return;
   }
+  API = `https://api.telegram.org/bot${token}`;
   log("info", "Telegram channel enabled");
   poll(claude);
 }
