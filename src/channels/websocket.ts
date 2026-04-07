@@ -32,8 +32,7 @@ export function setupWebSocket(server: Server, claude: Claude, apiToken?: string
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
     if (url.pathname !== "/ws/chat") {
-      socket.destroy();
-      return;
+      return; // Let other handlers (e.g. terminal) handle non-chat upgrades
     }
 
     // Auth: header > subprotocol > query
