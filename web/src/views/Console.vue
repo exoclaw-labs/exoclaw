@@ -10,19 +10,24 @@ const busy = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 
-// ── Pane display (same logic as Code.vue) ──
+/** Strip the Claude Code input prompt area from pane output.
+ *  Removes the trailing block: ────, ❯ prompt, ────, ⏵⏵ permissions line */
 const paneDisplay = computed(() => {
   const raw = state.paneContent;
   if (!raw) return "";
   const lines = raw.split("\n");
-  let endIdx = lines.length;
+  // Find the prompt line (❯) and walk back to the first ──── divider above it
+  let promptIdx = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (/^❯\s*$/.test(lines[i])) {
-      endIdx = i;
-      break;
-    }
+    if (/^❯/.test(lines[i])) { promptIdx = i; break; }
   }
-  return lines.slice(0, endIdx).filter(l => l.trim() !== "").join("\n");
+  if (promptIdx === -1) return lines.filter(l => l.trim() !== "").join("\n");
+  // Walk back from prompt to find the divider line above it
+  let startIdx = promptIdx;
+  for (let i = promptIdx - 1; i >= 0; i--) {
+    if (/^[─━─\u2500\u2501]{4,}/.test(lines[i])) { startIdx = i; break; }
+  }
+  return lines.slice(0, startIdx).filter(l => l.trim() !== "").join("\n");
 });
 
 function scrollBottom() {
