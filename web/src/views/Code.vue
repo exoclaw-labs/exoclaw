@@ -21,10 +21,30 @@ const models = [
   "claude-haiku-4-5-20251001",
 ];
 
-const agentName = computed(() => config.value.name || "Claude");
+const agentName = computed(() => {
+  const n = config.value.name;
+  if (!n || n === "agent") return "ExoClaw";
+  return n.charAt(0).toUpperCase() + n.slice(1);
+});
 
 async function loadConfig() {
-  try { config.value = await fetchConfig(); } catch {}
+  try { config.value = await fetchConfig(); initThinkingLevel(); } catch {}
+}
+
+const thinkingLevels = [
+  { value: "", label: "Default" },
+  { value: "0", label: "None" },
+  { value: "10000", label: "Low (10k)" },
+  { value: "50000", label: "Medium (50k)" },
+  { value: "100000", label: "High (100k)" },
+];
+
+const thinkingLevel = ref("");
+
+function initThinkingLevel() {
+  const flags = config.value?.claude?.extraFlags || [];
+  const idx = flags.indexOf("--thinking-budget");
+  thinkingLevel.value = idx >= 0 && idx < flags.length - 1 ? String(flags[idx + 1]) : "";
 }
 
 async function updateModel(value: string) {
@@ -35,46 +55,57 @@ async function updateModel(value: string) {
   savingConfig.value = false;
 }
 
+async function updateThinkingLevel(value: string) {
+  if (!config.value.claude) config.value.claude = {};
+  const ef = (config.value.claude.extraFlags || []).filter(
+    (f: string, i: number, arr: string[]) => f !== "--thinking-budget" && arr[i - 1] !== "--thinking-budget"
+  );
+  if (value) ef.push("--thinking-budget", value);
+  config.value.claude.extraFlags = ef.length ? ef : undefined;
+  thinkingLevel.value = value;
+  savingConfig.value = true;
+  try { await saveConfig(config.value); } catch {}
+  savingConfig.value = false;
+}
+
 // ── Slash commands (native + skills) ──
 const showSlash = ref(false);
 const customSkills = ref<{ name: string; content: string }[]>([]);
 const slashFilter = ref("");
 
-// Native Claude Code commands
+// Commands handled client-side (never sent to backend)
+const LOCAL_COMMANDS = new Set(["clear", "model"]);
+
+// Commands sent as tmux keystrokes to Claude Code CLI (not as prompts)
+const CLI_COMMANDS = new Set([
+  "compact", "cost", "status", "help", "diff", "plan", "review",
+  "security-review", "context", "effort", "fast", "rewind", "usage",
+  "permissions", "mcp", "hooks", "agents", "init", "doctor",
+]);
+
+// Native Claude Code commands shown in the slash menu
 const nativeCommands = [
   { name: "clear", desc: "Clear conversation history", icon: "bi-x-circle" },
   { name: "compact", desc: "Compact conversation to save context", icon: "bi-arrows-collapse" },
   { name: "model", desc: "Change the AI model", icon: "bi-cpu" },
   { name: "cost", desc: "Show token usage statistics", icon: "bi-cash-coin" },
-  { name: "help", desc: "Show help and available commands", icon: "bi-question-circle" },
-  { name: "init", desc: "Initialize project with CLAUDE.md", icon: "bi-file-earmark-plus" },
-  { name: "memory", desc: "Edit CLAUDE.md memory files", icon: "bi-brain" },
-  { name: "config", desc: "Open settings", icon: "bi-gear" },
-  { name: "permissions", desc: "Manage tool permissions", icon: "bi-shield-lock" },
   { name: "status", desc: "Show version, model, account info", icon: "bi-info-circle" },
-  { name: "doctor", desc: "Diagnose installation issues", icon: "bi-heart-pulse" },
+  { name: "help", desc: "Show help and available commands", icon: "bi-question-circle" },
   { name: "diff", desc: "View uncommitted changes", icon: "bi-file-diff" },
   { name: "review", desc: "Review code changes", icon: "bi-search" },
   { name: "security-review", desc: "Security analysis of pending changes", icon: "bi-shield-check" },
   { name: "plan", desc: "Enter plan mode", icon: "bi-map" },
-  { name: "resume", desc: "Resume a previous session", icon: "bi-arrow-clockwise" },
-  { name: "export", desc: "Export conversation as text", icon: "bi-download" },
-  { name: "copy", desc: "Copy last response to clipboard", icon: "bi-clipboard" },
   { name: "effort", desc: "Set model effort level", icon: "bi-speedometer" },
   { name: "context", desc: "Visualize context usage", icon: "bi-pie-chart" },
-  { name: "add-dir", desc: "Add a working directory", icon: "bi-folder-plus" },
-  { name: "login", desc: "Sign in to Anthropic", icon: "bi-box-arrow-in-right" },
-  { name: "logout", desc: "Sign out from Anthropic", icon: "bi-box-arrow-right" },
-  { name: "hooks", desc: "View hook configurations", icon: "bi-link-45deg" },
-  { name: "mcp", desc: "Manage MCP server connections", icon: "bi-plug" },
-  { name: "agents", desc: "Manage agent configurations", icon: "bi-people" },
-  { name: "skills", desc: "List available skills", icon: "bi-lightning" },
   { name: "fast", desc: "Toggle fast mode", icon: "bi-lightning-charge" },
   { name: "rewind", desc: "Rewind conversation to checkpoint", icon: "bi-skip-backward" },
-  { name: "rename", desc: "Rename the current session", icon: "bi-pencil" },
   { name: "usage", desc: "Show plan usage and rate limits", icon: "bi-bar-chart" },
-  { name: "feedback", desc: "Submit feedback about Claude Code", icon: "bi-chat-square-text" },
-  { name: "theme", desc: "Change the color theme", icon: "bi-palette" },
+  { name: "permissions", desc: "Manage tool permissions", icon: "bi-shield-lock" },
+  { name: "mcp", desc: "Manage MCP server connections", icon: "bi-plug" },
+  { name: "hooks", desc: "View hook configurations", icon: "bi-link-45deg" },
+  { name: "agents", desc: "Manage agent configurations", icon: "bi-people" },
+  { name: "init", desc: "Initialize project with CLAUDE.md", icon: "bi-file-earmark-plus" },
+  { name: "doctor", desc: "Diagnose installation issues", icon: "bi-heart-pulse" },
 ];
 
 const allCommands = computed(() => {
@@ -90,10 +121,43 @@ async function loadSkills() {
   try { customSkills.value = ((await (await fetch("/api/skills")).json()).skills || []); } catch {}
 }
 
+async function sendTmuxKeys(keys: string) {
+  try {
+    await fetch("/api/session/keys", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+  } catch {}
+}
+
+function handleSlashCommand(name: string): boolean {
+  if (LOCAL_COMMANDS.has(name)) {
+    if (name === "clear") {
+      state.messages.length = 0;
+      state.messages.push({ role: "assistant", content: "Conversation cleared." });
+    } else if (name === "model") {
+      showModes.value = true;
+      showSlash.value = false;
+    }
+    return true;
+  }
+  if (CLI_COMMANDS.has(name)) {
+    // Send as tmux keystrokes — Claude Code CLI intercepts these
+    sendTmuxKeys(`"/${name}" Enter`);
+    state.messages.push({ role: "assistant", content: `Sent \`/${name}\` to Claude Code session.` });
+    scrollBottom();
+    return true;
+  }
+  return false; // Not a recognized command — treat as prompt
+}
+
 function selectCommand(name: string) {
-  input.value = `/${name} ${input.value}`;
   closeAllPopups();
-  nextTick(() => inputEl.value?.focus());
+  if (handleSlashCommand(name)) return;
+  // Custom skill — send as regular prompt
+  input.value = `/${name}`;
+  nextTick(() => { inputEl.value?.focus(); handleSend(); });
 }
 
 // ── File upload (+) ──
@@ -191,6 +255,11 @@ function handleSend() {
   if (!text) return;
   input.value = "";
   nextTick(autoResize);
+
+  // Check if it's a slash command
+  const slashMatch = text.match(/^\/(\S+)$/);
+  if (slashMatch && handleSlashCommand(slashMatch[1])) return;
+
   send(text);
   scrollBottom();
   nextTick(() => inputEl.value?.focus());
@@ -395,8 +464,6 @@ const isWorking = computed(() => state.busy || state.agentBusy);
         <div class="popup-anchor">
           <button class="mode-bar-btn" @click.stop="showModes = !showModes; showSlash = false">
             <span class="mode-bar-model">{{ currentModel }}</span>
-            <span class="mode-bar-sep">|</span>
-            <span class="mode-bar-mode">Bypass permissions</span>
             <i class="bi bi-chevron-up" style="font-size:9px"></i>
           </button>
           <div v-if="showModes" class="popup modes-popup">
@@ -407,14 +474,16 @@ const isWorking = computed(() => state.busy || state.agentBusy);
               <i v-if="config.claude?.model === m" class="bi bi-check2 ms-auto"></i>
             </button>
             <div class="popup-divider"></div>
-            <div class="popup-item active" style="opacity:0.7;cursor:default">
-              <i class="bi bi-lock" style="font-size:10px"></i>
-              <span>Bypass permissions</span>
-              <span class="popup-item-desc">Always on</span>
-            </div>
+            <div class="popup-section-label">Thinking</div>
+            <button v-for="t in thinkingLevels" :key="t.value" class="popup-item" :class="{ active: thinkingLevel === t.value }" @click="updateThinkingLevel(t.value)">
+              <i class="bi bi-lightbulb"></i>
+              <span>{{ t.label }}</span>
+              <i v-if="thinkingLevel === t.value" class="bi bi-check2 ms-auto"></i>
+            </button>
             <div v-if="savingConfig" class="popup-footer">Saving...</div>
           </div>
         </div>
+        <span class="mode-bar-info">Bypass permissions</span>
       </div>
     </div>
   </div>
@@ -615,8 +684,7 @@ const isWorking = computed(() => state.busy || state.agentBusy);
 }
 .mode-bar-btn:hover { filter: brightness(1.15); }
 .mode-bar-model { font-weight: 500; }
-.mode-bar-sep { opacity: 0.3; }
-.mode-bar-mode { }
+.mode-bar-info { font-size: 11px; color: var(--bs-tertiary-color); margin-left: auto; }
 
 /* ── Popups ── */
 .popup-anchor { position: relative; }
