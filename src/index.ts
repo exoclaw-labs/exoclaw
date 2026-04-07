@@ -16,15 +16,31 @@ if (config.name && config.claude) {
   config.claude.name = config.name;
 }
 
+// Inject channel secrets into process.env so channel modules can read them.
+// Secrets are merged into config by loadConfig() but channel modules read env vars.
+const channels: Record<string, any> = config.channels || {};
+if (channels.telegram?.botToken && !process.env.TELEGRAM_BOT_TOKEN) {
+  process.env.TELEGRAM_BOT_TOKEN = channels.telegram.botToken;
+}
+if (channels.discord?.botToken && !process.env.DISCORD_BOT_TOKEN) {
+  process.env.DISCORD_BOT_TOKEN = channels.discord.botToken;
+}
+if (channels.slack?.botToken && !process.env.SLACK_BOT_TOKEN) {
+  process.env.SLACK_BOT_TOKEN = channels.slack.botToken;
+}
+if (channels.slack?.appToken && !process.env.SLACK_APP_TOKEN) {
+  process.env.SLACK_APP_TOKEN = channels.slack.appToken;
+}
+
 const { app, claude, sessionDb, sessionIndexer, scheduler, rateLimiter, estop } = createApp(config);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
   log(`"${config.name}" listening on http://${info.address}:${info.port}`);
 });
 
-if (config.channels.discord?.enabled) startDiscord(claude);
-if (config.channels.telegram?.enabled) startTelegram(claude);
-if (config.channels.websocket?.enabled) setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
+if (channels.discord?.enabled) startDiscord(claude);
+if (channels.telegram?.enabled) startTelegram(claude);
+if (channels.websocket?.enabled) setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
 setupTerminal(server as unknown as Server, config.apiToken);
 
 const shutdown = () => {
