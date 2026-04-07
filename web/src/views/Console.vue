@@ -1,22 +1,32 @@
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from "vue";
 import { fetchConfig, saveConfig } from "../composables/useApi";
+import { useChatStore } from "../composables/useChatStore";
 
-const pane = ref("");
+const { state, startPanePolling, stopPanePolling } = useChatStore();
+
 const input = ref("");
 const busy = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
-let timer: ReturnType<typeof setInterval>;
 
-// ── Pane polling ──
+// ── Pane display (same logic as Code.vue) ──
+const paneDisplay = computed(() => {
+  const raw = state.paneContent;
+  if (!raw) return "";
+  const lines = raw.split("\n");
+  let endIdx = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^❯\s*$/.test(lines[i])) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(0, endIdx).filter(l => l.trim() !== "").join("\n");
+});
+
 function scrollBottom() {
   nextTick(() => { if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight; });
-}
-
-async function loadPane() {
-  try { pane.value = (await (await fetch("/api/session/pane")).json()).content || ""; }
-  catch {}
 }
 
 async function sendKeys(keys: string) {
@@ -27,7 +37,6 @@ async function sendKeys(keys: string) {
     body: JSON.stringify({ keys }),
   });
   await new Promise(r => setTimeout(r, 500));
-  await loadPane();
   busy.value = false;
   nextTick(() => inputEl.value?.focus());
 }
@@ -253,15 +262,25 @@ const currentModel = computed(() => {
   return m.replace("claude-", "").replace(/-\d+$/, "") || "—";
 });
 
-watch(pane, scrollBottom);
+const isWorking = computed(() => state.busy || state.agentBusy);
+
+const statusText = computed(() => {
+  if (!state.agentAlive) return "Offline";
+  if (isWorking.value) return "Working...";
+  return "Ready";
+});
+
+// Auto-scroll pane when content changes
+watch(() => state.paneContent, scrollBottom);
+
 onMounted(() => {
-  loadPane(); loadConfig(); loadSkills();
-  timer = setInterval(loadPane, 2000);
+  loadConfig(); loadSkills();
+  startPanePolling();
   window.addEventListener("keydown", onWindowKeydown);
   document.addEventListener("click", onDocClick);
 });
 onUnmounted(() => {
-  clearInterval(timer);
+  stopPanePolling();
   window.removeEventListener("keydown", onWindowKeydown);
   document.removeEventListener("click", onDocClick);
 });
@@ -276,13 +295,22 @@ onUnmounted(() => {
         <span class="fw-semibold" style="font-size:12px">Console</span>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <button class="header-btn" @click="loadPane" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+        <span class="status-text">{{ statusText }}</span>
+        <span class="status-dot" :class="{
+          connected: state.agentAlive && !isWorking,
+          busy: isWorking,
+          disconnected: !state.agentAlive,
+        }"></span>
       </div>
     </div>
 
-    <!-- Pane -->
-    <div ref="scrollEl" class="flex-grow-1 overflow-auto p-0" style="min-height:0">
-      <pre class="pane-content">{{ pane || 'Loading...' }}</pre>
+    <!-- Pane (same styling as Code.vue pane-side) -->
+    <div class="pane-side">
+      <div class="pane-header">
+        <i class="bi bi-terminal" style="font-size:12px"></i>
+        <span>Session</span>
+      </div>
+      <pre ref="scrollEl" class="pane-content">{{ paneDisplay || 'Waiting for session output...' }}</pre>
     </div>
 
     <!-- Quick keys -->
@@ -383,18 +411,32 @@ onUnmounted(() => {
   padding: 8px 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg);
   flex-shrink: 0;
 }
-.header-btn {
-  background: none; border: none; color: var(--bs-tertiary-color);
-  font-size: 12px; padding: 2px 6px; cursor: pointer; border-radius: 3px;
-}
-.header-btn:hover { color: var(--bs-secondary-color); background: var(--bs-secondary-bg); }
+.status-text { font-size: 11px; color: var(--bs-tertiary-color); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.status-dot.connected { background: var(--bs-success); }
+.status-dot.busy { background: var(--bs-warning); animation: pulse 1.5s infinite; }
+.status-dot.disconnected { background: var(--bs-danger); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-/* ── Pane ── */
+/* ── Pane (matches Code.vue pane-side) ── */
+.pane-side {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  background: #1a1a2e;
+}
+.pane-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; font-size: 11px; font-weight: 600;
+  color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
 .pane-content {
-  padding: 12px 16px; margin: 0;
+  flex: 1; margin: 0; padding: 10px 12px; overflow-y: auto;
   font-family: "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", var(--bs-font-monospace);
-  font-size: 13px; line-height: 1.45; color: var(--bs-body-color);
+  font-size: 12px; line-height: 1.45; color: #e0e0e0;
   white-space: pre-wrap; word-break: break-all;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
 
 /* ── Quick keys ── */
