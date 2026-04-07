@@ -358,8 +358,11 @@ const paneDisplay = computed(() => {
       break;
     }
   }
-  return lines.slice(0, endIdx).filter(l => l.trim() !== "").slice(-50).join("\n");
+  return lines.slice(0, endIdx).filter(l => l.trim() !== "").join("\n");
 });
+
+// On mobile, which panel is active
+const mobileView = ref<'chat' | 'pane'>('chat');
 </script>
 
 <template>
@@ -371,10 +374,6 @@ const paneDisplay = computed(() => {
         <span class="fw-semibold" style="font-size:12px">Claude Code</span>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <button class="header-btn" :class="{ active: showPane }" @click="showPane = !showPane"
-          :title="showPane ? 'Hide session pane' : 'Show session pane'">
-          <i class="bi bi-terminal"></i>
-        </button>
         <button class="header-btn" :class="{ active: verbose }" @click="verbose = !verbose"
           :title="verbose ? 'Hide tool details' : 'Show tool details'">
           <i class="bi" :class="verbose ? 'bi-eye-fill' : 'bi-eye'"></i>
@@ -388,98 +387,124 @@ const paneDisplay = computed(() => {
       </div>
     </div>
 
-    <!-- Messages -->
-    <div ref="scrollEl" class="flex-grow-1 overflow-auto code-messages" style="min-height:0">
-      <div v-if="!state.messages.length" class="h-100 d-flex flex-column align-items-center justify-content-center text-body-secondary px-4">
-        <i class="bi bi-braces" style="font-size:40px;opacity:0.12"></i>
-        <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask {{ agentName }} to write code, fix bugs, refactor, or explain.</p>
-      </div>
-
-      <template v-for="(m, i) in state.messages" :key="i">
-        <!-- User -->
-        <div v-if="m.role === 'user'" class="msg msg-user">
-          <div class="msg-label">You</div>
-          <div class="msg-body">{{ m.content }}</div>
+    <!-- Body: chat + pane side by side -->
+    <div class="code-body">
+      <!-- Chat panel -->
+      <div ref="scrollEl" class="chat-side" :class="{ 'mobile-hidden': showPane && mobileView === 'pane' }">
+        <div v-if="!state.messages.length" class="h-100 d-flex flex-column align-items-center justify-content-center text-body-secondary px-4">
+          <i class="bi bi-braces" style="font-size:40px;opacity:0.12"></i>
+          <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask {{ agentName }} to write code, fix bugs, refactor, or explain.</p>
         </div>
 
-        <!-- Assistant -->
-        <div v-else-if="m.role === 'assistant'" class="msg msg-assistant">
-          <div class="msg-label">{{ agentName }}</div>
-          <div class="msg-body msg-md">
-            <div v-html="renderMd(m.content)" class="chat-md"></div>
-            <button class="copy-btn" @click="copyText(m.content)" title="Copy"><i class="bi bi-clipboard"></i></button>
-          </div>
-        </div>
-
-        <!-- Thinking — always shown -->
-        <div v-else-if="m.role === 'thinking'" class="tool-line thinking-line">
-          <i class="bi bi-lightbulb"></i>
-          <span class="tool-line-label">Thinking</span>
-          <span class="tool-line-detail">{{ m.content.slice(0, 80) }}{{ m.content.length > 80 ? '...' : '' }}</span>
-        </div>
-
-        <!-- Tool calls -->
-        <template v-else-if="m.role === 'tool'">
-          <!-- Edit tool → diff box (always shown) -->
-          <div v-if="isEditTool(m.toolName) && parseDiff(m.content)" class="diff-box">
-            <div class="diff-header">
-              <i class="bi bi-pencil-square diff-icon"></i>
-              <span class="diff-file">{{ parseDiff(m.content)!.file.split('/').pop() }}</span>
-              <span class="diff-path">{{ parseDiff(m.content)!.file }}</span>
-            </div>
-            <div class="diff-body" :class="{ 'diff-collapsed': !expandedDiffs.has(i) }">
-              <template v-if="parseDiff(m.content)!.oldStr">
-                <div v-for="(line, li) in parseDiff(m.content)!.oldStr.split('\n')" :key="'r'+li" class="diff-line diff-removed">
-                  <span class="diff-gutter">-</span><span>{{ line }}</span>
-                </div>
-              </template>
-              <template v-if="parseDiff(m.content)!.newStr">
-                <div v-for="(line, li) in parseDiff(m.content)!.newStr.split('\n')" :key="'a'+li" class="diff-line diff-added">
-                  <span class="diff-gutter">+</span><span>{{ line }}</span>
-                </div>
-              </template>
-            </div>
-            <button v-if="parseDiff(m.content)!.oldStr.split('\n').length + parseDiff(m.content)!.newStr.split('\n').length > 8" class="diff-expand" @click="toggleDiff(i)">
-              {{ expandedDiffs.has(i) ? 'Show less' : 'Show more' }}
-            </button>
+        <template v-for="(m, i) in state.messages" :key="i">
+          <!-- User -->
+          <div v-if="m.role === 'user'" class="msg msg-user">
+            <div class="msg-label">You</div>
+            <div class="msg-body">{{ m.content }}</div>
           </div>
 
-          <!-- Other tools: hidden by default, shown in verbose -->
-          <div v-else-if="verbose" class="tool-verbose">
-            <div class="tool-verbose-header">
-              <i class="bi" :class="{
-                'bi-terminal': m.toolName?.toLowerCase().includes('bash'),
-                'bi-file-earmark-text': m.toolName?.toLowerCase().includes('read'),
-                'bi-search': m.toolName?.toLowerCase().includes('glob') || m.toolName?.toLowerCase().includes('grep'),
-                'bi-wrench': !m.toolName,
-              }"></i>
-              <span>{{ m.toolName || 'Tool' }}</span>
+          <!-- Assistant -->
+          <div v-else-if="m.role === 'assistant'" class="msg msg-assistant">
+            <div class="msg-label">{{ agentName }}</div>
+            <div class="msg-body msg-md">
+              <div v-html="renderMd(m.content)" class="chat-md"></div>
+              <button class="copy-btn" @click="copyText(m.content)" title="Copy"><i class="bi bi-clipboard"></i></button>
             </div>
-            <pre class="tool-verbose-body">{{ m.content.slice(0, 600) }}{{ m.content.length > 600 ? '\n...' : '' }}</pre>
           </div>
-          <!-- Default: completely hidden -->
+
+          <!-- Thinking -->
+          <div v-else-if="m.role === 'thinking'" class="tool-line thinking-line">
+            <i class="bi bi-lightbulb"></i>
+            <span class="tool-line-label">Thinking</span>
+            <span class="tool-line-detail">{{ m.content.slice(0, 80) }}{{ m.content.length > 80 ? '...' : '' }}</span>
+          </div>
+
+          <!-- Tool calls -->
+          <template v-else-if="m.role === 'tool'">
+            <!-- Edit tool → diff box -->
+            <div v-if="isEditTool(m.toolName) && parseDiff(m.content)" class="diff-box">
+              <div class="diff-header">
+                <i class="bi bi-pencil-square diff-icon"></i>
+                <span class="diff-file">{{ parseDiff(m.content)!.file.split('/').pop() }}</span>
+                <span class="diff-path">{{ parseDiff(m.content)!.file }}</span>
+              </div>
+              <div class="diff-body" :class="{ 'diff-collapsed': !expandedDiffs.has(i) }">
+                <template v-if="parseDiff(m.content)!.oldStr">
+                  <div v-for="(line, li) in parseDiff(m.content)!.oldStr.split('\n')" :key="'r'+li" class="diff-line diff-removed">
+                    <span class="diff-gutter">-</span><span>{{ line }}</span>
+                  </div>
+                </template>
+                <template v-if="parseDiff(m.content)!.newStr">
+                  <div v-for="(line, li) in parseDiff(m.content)!.newStr.split('\n')" :key="'a'+li" class="diff-line diff-added">
+                    <span class="diff-gutter">+</span><span>{{ line }}</span>
+                  </div>
+                </template>
+              </div>
+              <button v-if="parseDiff(m.content)!.oldStr.split('\n').length + parseDiff(m.content)!.newStr.split('\n').length > 8" class="diff-expand" @click="toggleDiff(i)">
+                {{ expandedDiffs.has(i) ? 'Show less' : 'Show more' }}
+              </button>
+            </div>
+
+            <!-- Other tools: shown in verbose mode -->
+            <div v-else-if="verbose" class="tool-verbose">
+              <div class="tool-verbose-header">
+                <i class="bi" :class="{
+                  'bi-terminal': m.toolName?.toLowerCase().includes('bash'),
+                  'bi-file-earmark-text': m.toolName?.toLowerCase().includes('read'),
+                  'bi-search': m.toolName?.toLowerCase().includes('glob') || m.toolName?.toLowerCase().includes('grep'),
+                  'bi-wrench': !m.toolName,
+                }"></i>
+                <span>{{ m.toolName || 'Tool' }}</span>
+              </div>
+              <pre class="tool-verbose-body">{{ m.content.slice(0, 600) }}{{ m.content.length > 600 ? '\n...' : '' }}</pre>
+            </div>
+          </template>
+
+          <!-- Error -->
+          <div v-else-if="m.role === 'error'" class="msg-error">
+            <i class="bi bi-exclamation-triangle"></i> {{ m.content }}
+          </div>
         </template>
 
-        <!-- Error -->
-        <div v-else-if="m.role === 'error'" class="msg-error">
-          <i class="bi bi-exclamation-triangle"></i> {{ m.content }}
+        <div v-if="isWorking" class="busy-bar">
+          <span class="busy-spinner"></span>
+          <span>{{ statusText }}</span>
         </div>
-      </template>
+      </div>
 
-      <div v-if="isWorking && !showPane" class="busy-bar">
-        <span class="busy-spinner"></span>
-        <span>{{ statusText }}</span>
+      <!-- Pane toggle rail -->
+      <button class="pane-toggle" @click="showPane = !showPane; if (showPane) mobileView = 'pane'; else mobileView = 'chat';"
+        :title="showPane ? 'Hide session' : 'Show session'">
+        <i class="bi" :class="showPane ? 'bi-chevron-right' : 'bi-chevron-left'"></i>
+      </button>
+
+      <!-- Session pane -->
+      <div v-if="showPane" class="pane-side" :class="{ 'mobile-hidden': mobileView === 'chat' }">
+        <div class="pane-header">
+          <i class="bi bi-terminal" style="font-size:12px"></i>
+          <span>Session</span>
+          <!-- Mobile: switch back to chat -->
+          <button class="pane-mobile-back" @click="mobileView = 'chat'">
+            <i class="bi bi-chat-dots"></i> Chat
+          </button>
+        </div>
+        <pre ref="paneEl" class="pane-content">{{ paneDisplay || 'Waiting for session output...' }}</pre>
       </div>
     </div>
 
-    <!-- Persistent pane viewer (toggle) -->
-    <div v-if="showPane" class="pane-viewer">
-      <pre ref="paneEl" class="pane-content">{{ paneDisplay || 'Waiting for session output...' }}</pre>
-    </div>
-
-    <!-- Input area -->
+    <!-- Input area — always at bottom, full width -->
     <div class="code-input-area">
       <input ref="fileInputEl" type="file" multiple accept=".txt,.md,.ts,.js,.tsx,.jsx,.json,.yml,.yaml,.py,.sh,.css,.html,.xml,.csv,.sql,.rs,.go,.java,.c,.cpp,.h,.rb,.php,.swift,.kt,.toml,.ini,.cfg,.env,.log" style="display:none" @change="handleFileUpload" />
+
+      <!-- Mobile: tab switcher when pane is open -->
+      <div v-if="showPane" class="mobile-tabs">
+        <button class="mobile-tab" :class="{ active: mobileView === 'chat' }" @click="mobileView = 'chat'">
+          <i class="bi bi-chat-dots"></i> Chat
+        </button>
+        <button class="mobile-tab" :class="{ active: mobileView === 'pane' }" @click="mobileView = 'pane'">
+          <i class="bi bi-terminal"></i> Session
+        </button>
+      </div>
 
       <form @submit.prevent="handleSend" class="code-input-form">
         <textarea ref="inputEl" v-model="input" :disabled="!state.connected"
@@ -490,7 +515,7 @@ const paneDisplay = computed(() => {
         </button>
       </form>
 
-      <!-- Bottom bar: +, /, mode — all left-justified, below input -->
+      <!-- Bottom bar: +, /, mode -->
       <div class="input-bottom-bar">
         <button class="action-btn" @click="triggerFileUpload" title="Upload file">
           <i class="bi bi-plus-lg"></i>
@@ -564,6 +589,7 @@ const paneDisplay = computed(() => {
 .code-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg);
+  flex-shrink: 0;
 }
 .header-btn {
   background: none; border: none; color: var(--bs-tertiary-color);
@@ -580,9 +606,62 @@ const paneDisplay = computed(() => {
 .status-dot.disconnected { background: var(--bs-danger); }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
+/* ── Body: split layout ── */
+.code-body {
+  flex: 1; display: flex; min-height: 0; overflow: hidden;
+}
+
+/* ── Chat side ── */
+.chat-side {
+  flex: 1; overflow-y: auto; min-width: 0;
+  padding: 0;
+}
+
+/* ── Pane toggle rail ── */
+.pane-toggle {
+  flex-shrink: 0; width: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bs-tertiary-bg);
+  border: none; border-left: 1px solid var(--bs-border-color); border-right: 1px solid var(--bs-border-color);
+  color: var(--bs-tertiary-color);
+  cursor: pointer; font-size: 14px;
+  transition: color 0.15s, background 0.15s;
+}
+.pane-toggle:hover {
+  background: var(--bs-secondary-bg);
+  color: var(--bs-primary);
+}
+
+/* ── Pane side ── */
+.pane-side {
+  flex: 1; display: flex; flex-direction: column; min-width: 0;
+  background: #1a1a2e;
+}
+.pane-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; font-size: 11px; font-weight: 600;
+  color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
+.pane-mobile-back {
+  display: none; /* shown on mobile only */
+  margin-left: auto; background: none; border: none;
+  color: rgba(255,255,255,0.5); font-size: 11px; cursor: pointer;
+  gap: 4px; align-items: center;
+}
+.pane-mobile-back:hover { color: rgba(255,255,255,0.8); }
+.pane-content {
+  flex: 1; margin: 0; padding: 10px 12px; overflow-y: auto;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", var(--bs-font-monospace);
+  font-size: 12px; line-height: 1.45; color: #e0e0e0;
+  white-space: pre-wrap; word-break: break-all;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+
 /* ── Messages ── */
-.code-messages { padding: 0; }
-.msg { padding: 12px 16px 8px; border-bottom: 1px solid var(--bs-border-color);  margin-left: auto; margin-right: auto; }
+.msg { padding: 12px 16px 8px; border-bottom: 1px solid var(--bs-border-color); }
 .msg:last-child { border-bottom: none; }
 .msg-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; }
 .msg-user .msg-label { color: var(--bs-secondary-color); }
@@ -599,7 +678,7 @@ const paneDisplay = computed(() => {
 
 /* ── Diff box (edit tools) ── */
 .diff-box {
-   margin: 4px auto;
+  margin: 4px 16px;
   border: 1px solid var(--bs-border-color);
   border-radius: 6px; overflow: hidden; background: var(--bs-tertiary-bg);
 }
@@ -645,9 +724,9 @@ const paneDisplay = computed(() => {
 }
 .diff-added .diff-gutter { color: var(--bs-success); }
 
-/* ── Tool verbose (only in verbose mode) ── */
+/* ── Tool verbose ── */
 .tool-verbose {
-   margin: 4px auto; border: 1px solid var(--bs-border-color);
+  margin: 4px 16px; border: 1px solid var(--bs-border-color);
   border-radius: 5px; overflow: hidden; background: var(--bs-tertiary-bg);
 }
 .tool-verbose-header {
@@ -662,11 +741,10 @@ const paneDisplay = computed(() => {
   max-height: 200px; overflow-y: auto;
 }
 
-/* ── Thinking (verbose only) ── */
+/* ── Thinking ── */
 .tool-line {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 16px; font-size: 13px; color: var(--bs-tertiary-color);
-   margin-left: auto; margin-right: auto;
 }
 .tool-line .bi { font-size: 12px; }
 .tool-line-label { color: var(--bs-secondary-color); }
@@ -675,34 +753,10 @@ const paneDisplay = computed(() => {
   white-space: nowrap; max-width: 200px; font-style: italic;
 }
 
-/* ── Pane viewer (live tmux output) ── */
-.pane-viewer {
-  margin: 4px auto;
-  border: 1px solid var(--bs-border-color);
-  border-radius: 6px;
-  overflow: hidden;
-  background: #1a1a2e;
-}
-.pane-content {
-  margin: 0;
-  padding: 10px 12px;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", var(--bs-font-monospace);
-  font-size: 12px;
-  line-height: 1.45;
-  color: #e0e0e0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 280px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
-}
-
-/* ── Busy fallback ── */
+/* ── Busy ── */
 .busy-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 16px; font-size: 14px; color: var(--bs-tertiary-color);
-   margin-left: auto; margin-right: auto;
 }
 .busy-spinner {
   width: 10px; height: 10px;
@@ -715,14 +769,13 @@ const paneDisplay = computed(() => {
 .msg-error {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 16px; font-size: 14px; color: var(--bs-danger);
-   margin-left: auto; margin-right: auto;
 }
 
 /* ── Input area ── */
 .code-input-area {
   border-top: 1px solid var(--bs-border-color);
   padding: 10px 12px 12px; background: var(--bs-tertiary-bg);
-  margin: 0 auto; width: 100%;
+  width: 100%; flex-shrink: 0;
 }
 .input-bottom-bar {
   display: flex; align-items: center; gap: 6px;
@@ -783,10 +836,7 @@ const paneDisplay = computed(() => {
   border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);
   z-index: 100; overflow: hidden;
 }
-.modes-popup {
-  left: 0;
-  min-width: 260px;
-}
+.modes-popup { left: 0; min-width: 260px; }
 .popup-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 10px; border-bottom: 1px solid var(--bs-border-color);
@@ -829,4 +879,26 @@ const paneDisplay = computed(() => {
 .chat-md :deep(li) { margin: 2px 0; }
 .chat-md :deep(h1), .chat-md :deep(h2), .chat-md :deep(h3) { font-size: 16px; font-weight: 600; margin: 12px 0 4px; }
 .chat-md :deep(blockquote) { border-left: 3px solid var(--bs-border-color); padding-left: 10px; color: var(--bs-secondary-color); margin: 8px 0; }
+
+/* ── Mobile tabs ── */
+.mobile-tabs { display: none; }
+.mobile-tab {
+  flex: 1; padding: 6px; border: none; border-radius: 6px;
+  background: var(--bs-secondary-bg); color: var(--bs-tertiary-color);
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+}
+.mobile-tab.active { background: var(--bs-primary); color: #fff; }
+
+/* ── Responsive: small screens ── */
+@media (max-width: 768px) {
+  .chat-side { flex: none; width: 100%; height: 100%; }
+  .pane-side { flex: none; width: 100%; height: 100%; }
+  .mobile-hidden { display: none !important; }
+  .pane-toggle { display: none; }
+  .mobile-tabs {
+    display: flex; gap: 4px; margin-bottom: 8px;
+  }
+  .pane-mobile-back { display: flex; }
+}
 </style>
