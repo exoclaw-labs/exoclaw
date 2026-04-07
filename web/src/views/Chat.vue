@@ -249,11 +249,11 @@ const chatBlocks = computed((): ChatBlock[] => {
   const blocks: ChatBlock[] = [];
   let i = 0;
 
-  // Skip leading noise (empty lines, dividers, status)
+  // TUI noise: dividers, status bars, prompts, UI chrome
   const isNoise = (l: string) =>
-    !l.trim() ||
-    /^[─━\u2500\u2501]{4,}/.test(l) ||
-    /^\s*[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]/.test(l) ||
+    /^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(l) ||
+    /^[╭╰│╮╯┌└┐┘├┤┬┴┼]/.test(l) ||
+    /^\s*[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w/.test(l) ||
     /bypass permissions/i.test(l) ||
     /Remote Control/i.test(l) ||
     /\/remote-control is active/.test(l) ||
@@ -262,85 +262,91 @@ const chatBlocks = computed((): ChatBlock[] => {
     /\? for shortcu/.test(l) ||
     /Please upgrade/.test(l) ||
     /Claude Code has switched/.test(l) ||
-    /^⏵⏵/.test(l.trim()) ||
-    /[◐◑◒◓]\s*(low|medium|high|max)\s*·\s*\/effort/.test(l);
+    /^\s*⏵⏵/.test(l) ||
+    /[◐◑◒◓]\s*(low|medium|high|max)\s*·\s*\/effort/.test(l) ||
+    /^\s*\d+\.\d+\.\d+\s/.test(l) || // version banners
+    /^Session:/.test(l) ||
+    /^Model:/.test(l) ||
+    /^Context:/.test(l) ||
+    /^Cost:/.test(l);
+
+  const isToolLine = (l: string) =>
+    /^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s/.test(l);
 
   while (i < lines.length) {
     const line = lines[i];
 
     // User prompt: ❯ text
     if (/^❯\s+\S/.test(line)) {
-      const text = line.replace(/^❯\s+/, "");
-      blocks.push({ type: "user", content: text });
+      blocks.push({ type: "user", content: line.replace(/^❯\s+/, "") });
       i++;
       continue;
     }
 
-    // Idle prompt at end — skip
+    // Idle prompt — skip
     if (/^❯\s*$/.test(line)) { i++; continue; }
 
-    // Tool use: "  Edited file", "  Ran N bash", "  Read N files", etc.
+    // Tool use line
     const toolMatch = line.match(/^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s+(.*)/);
     if (toolMatch) {
       const toolName = toolMatch[1];
       const detail = toolMatch[2];
 
-      // Check if this is an edit with diff content following
-      if (toolName === "Edited" || toolName === "Wrote") {
-        const file = detail;
-        const added: string[] = [];
-        const removed: string[] = [];
-        // Collect ⎿ diff lines
-        let j = i + 1;
-        while (j < lines.length && /^\s{2}⎿/.test(lines[j])) {
-          const dl = lines[j].replace(/^\s{2}⎿\s?/, "");
-          if (dl.startsWith("+") || dl.startsWith(" +")) added.push(dl.replace(/^\s?\+\s?/, ""));
-          else if (dl.startsWith("-") || dl.startsWith(" -")) removed.push(dl.replace(/^\s?-\s?/, ""));
-          j++;
-        }
-        if (added.length || removed.length) {
-          blocks.push({ type: "diff", content: `${toolName} ${file}`, file, added, removed });
-        } else {
-          blocks.push({ type: "tool", content: `${toolName} ${file}` });
-        }
-        i = j;
-        continue;
-      }
-
-      // Other tools — collect ⎿ output lines
-      let toolOutput = `${toolName} ${detail}`;
+      // Collect ⎿ output lines following the tool
       let j = i + 1;
+      const outputLines: string[] = [];
       while (j < lines.length && /^\s{2}⎿/.test(lines[j])) {
+        outputLines.push(lines[j].replace(/^\s{2}⎿\s?/, ""));
         j++;
       }
-      blocks.push({ type: "tool", content: toolOutput });
+
+      // Edit tools: parse as diff
+      if (toolName === "Edited" || toolName === "Wrote") {
+        const added: string[] = [];
+        const removed: string[] = [];
+        for (const ol of outputLines) {
+          if (/^\s*\+/.test(ol)) added.push(ol.replace(/^\s*\+\s?/, ""));
+          else if (/^\s*-/.test(ol)) removed.push(ol.replace(/^\s*-\s?/, ""));
+        }
+        if (added.length || removed.length) {
+          blocks.push({ type: "diff", content: `${toolName} ${detail}`, file: detail, added, removed });
+        } else {
+          blocks.push({ type: "tool", content: `${toolName} ${detail}` });
+        }
+      } else {
+        blocks.push({ type: "tool", content: `${toolName} ${detail}` });
+      }
       i = j;
       continue;
     }
 
-    // Thinking indicator
-    if (/\(thinking\)/.test(line) || /^\s*●\s/.test(line)) {
-      i++;
-      continue;
-    }
+    // Thinking indicator — skip
+    if (/\(thinking\)/.test(line) || /^\s*●\s/.test(line)) { i++; continue; }
+
+    // Empty line — skip (but preserve inside assistant blocks below)
+    if (!line.trim()) { i++; continue; }
 
     // Noise — skip
     if (isNoise(line)) { i++; continue; }
 
-    // Assistant text — collect consecutive non-prompt, non-tool lines
-    let text = "";
+    // Assistant text — collect consecutive lines, preserving structure
+    const textLines: string[] = [];
     while (i < lines.length) {
       const l = lines[i];
       if (/^❯/.test(l)) break;
-      if (/^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s/.test(l)) break;
+      if (isToolLine(l)) break;
       if (isNoise(l)) { i++; continue; }
-      // Strip leading "● " or "  ⎿  " prefixes from assistant text
+      if (/\(thinking\)/.test(l) || /^\s*●\s/.test(l)) { i++; continue; }
+      // Strip TUI bullet prefix but preserve the text
       const cleaned = l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  ");
-      text += (text ? "\n" : "") + cleaned;
+      textLines.push(cleaned);
       i++;
     }
-    if (text.trim()) {
-      blocks.push({ type: "assistant", content: text.trim() });
+    // Trim trailing empty lines, preserve internal structure
+    while (textLines.length && !textLines[textLines.length - 1].trim()) textLines.pop();
+    while (textLines.length && !textLines[0].trim()) textLines.shift();
+    if (textLines.length) {
+      blocks.push({ type: "assistant", content: textLines.join("\n") });
     }
   }
 
