@@ -4,6 +4,28 @@
 # channel interfaces. No shared config between agents — each is its
 # own entity interacting with a different human.
 #
+# Claude env vars are collected here so they're easy to override and
+# are automatically inherited by sub-agent processes (claude -p jobs).
+# CLAUDE_CONFIG_DIR is set in the Dockerfile and intentionally omitted here.
+
+x-claude-env: &claude-env
+  # Auth — pass API key from host env, or leave unset to use `claude login`
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+
+  # Model — leave empty to use the Dockerfile/config default
+  CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+
+  # Headless / tmux-friendly — suppress interactive UI elements
+  CLAUDE_CODE_DISABLE_MOUSE: "1"
+  CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1"
+  CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL: "1"
+  CLAUDE_CODE_NO_FLICKER: "1"
+  CLAUDE_CODE_ACCESSIBILITY: "0"
+
+  # Context injection — extra files or a custom CLAUDE.md path
+  CLAUDE_MD_PATH: ${CLAUDE_MD_PATH:-}
+  CLAUDE_FILES: ${CLAUDE_FILES:-}
 
 
 services:
@@ -13,6 +35,8 @@ services:
     restart: unless-stopped
     ports: ["8080:8080"]
     shm_size: "2gb"
+    environment:
+      <<: *claude-env
     volumes:
       - exoclaw-data:/home/agent
     healthcheck:
