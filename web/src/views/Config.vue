@@ -209,6 +209,8 @@ async function load() {
   loading.value = true;
   try {
     const [cfg, files] = await Promise.all([fetchConfig(), fetchClaudeFiles()]);
+    // remoteControl defaults to true in the runtime (enabled unless explicitly false)
+    if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = true;
     config.value = cfg;
     claudeFiles.value = files;
     jsonText.value = JSON.stringify(cfg, null, 2);
