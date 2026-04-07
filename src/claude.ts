@@ -134,6 +134,15 @@ export class Claude {
     scriptLines[scriptLines.length - 1] = scriptLines[scriptLines.length - 1].replace(/ \\$/, "");
     writeFileSync(launcherPath, scriptLines.join("\n") + "\n", { mode: 0o755 });
 
+    // Configure tmux for reliable capture-pane parsing
+    try {
+      execSync(`tmux set-option -g history-limit 10000 2>/dev/null`);
+      execSync(`tmux set-option -g escape-time 0 2>/dev/null`);
+      execSync(`tmux set-option -g set-clipboard off 2>/dev/null`);
+      execSync(`tmux set-option -g mouse off 2>/dev/null`);
+      execSync(`tmux set-option -g status off 2>/dev/null`);
+    } catch { /* tmux server may not be running yet */ }
+
     log("info", `Starting tmux session: claude ${claudeArgs.join(" ")}`);
     execSync(`tmux new-session -d -s ${TMUX_SESSION} -x 200 -y 50 ${launcherPath}`);
     this._alive = true;
