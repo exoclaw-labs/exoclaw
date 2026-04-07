@@ -11,8 +11,7 @@ import { SessionDB } from "./session-db.js";
 import { PROJECT_DIR_SUFFIX } from "./constants.js";
 
 const PROJECT_DIR = join(
-  process.env.HOME || "/home/agent",
-  ".claude",
+  process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/home/agent", "workspace", ".claude"),
   "projects",
   PROJECT_DIR_SUFFIX
 );

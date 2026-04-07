@@ -551,7 +551,11 @@ export class Claude {
    */
   private async *sendViaSessionFile(prompt: string): AsyncGenerator<{ type: string; content: string }> {
     // Find the current session JSONL file (most recently modified)
-    const projectDir = join(process.env.HOME || "/tmp", ".claude", "projects", PROJECT_DIR_SUFFIX);
+    const projectDir = join(
+      process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/tmp", "workspace", ".claude"),
+      "projects",
+      PROJECT_DIR_SUFFIX
+    );
     let sessionFile = "";
     try {
       const files = readdirSync(projectDir)

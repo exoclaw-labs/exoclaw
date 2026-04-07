@@ -256,7 +256,11 @@ export function createApp(config: GatewayConfig) {
 
   app.get("/api/session/history", (c) => {
     try {
-      const projectDir = join(workspaceDir, ".claude", "projects", PROJECT_DIR_SUFFIX);
+      const projectDir = join(
+        process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/home/agent", "workspace", ".claude"),
+        "projects",
+        PROJECT_DIR_SUFFIX
+      );
       const files = readdirSync(projectDir)
         .filter((f: string) => f.endsWith(".jsonl") && !f.includes("/"))
         .map((f: string) => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))

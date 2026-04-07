@@ -75,7 +75,7 @@ USER agent
 WORKDIR /home/agent/workspace
 
 ENV HOME=/home/agent
-ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
+ENV CLAUDE_CONFIG_DIR=/home/agent/workspace/.claude
 ENV NODE_ENV=production
 ENV ENABLE_CLAUDEAI_MCP_SERVERS=false
 
