@@ -43,6 +43,28 @@ export interface ClaudeConfig {
 
 const IDLE_PATTERN = /^❯\s*$/m;
 
+/** Test if a tmux pane line is TUI noise (dividers, status, spinners, chrome). */
+function isTuiNoise(l: string): boolean {
+  const t = l.trim();
+  if (!t) return true;
+  if (/^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(t)) return true;
+  if (/^[╭╰│╮╯┌└┐┘├┤┬┴┼▐▝▛▜▘]/.test(t)) return true;
+  if (/^\s*⏵⏵/.test(l)) return true;
+  if (/bypass permissions/i.test(t)) return true;
+  if (/[◐◑◒◓]/.test(t)) return true;
+  if (/shift\+tab to cycle/i.test(t)) return true;
+  if (/ctrl\+o to expand/i.test(t)) return true;
+  if (/\? for shortcu/.test(t)) return true;
+  if (/Claude Code has switched/.test(t)) return true;
+  if (/Please upgrade/.test(t)) return true;
+  if (/↑.*·/.test(t) && t.length < 80) return true; // "↑ Opus now defaults to..." tips
+  // Spinner decorations: ✻ Voice mode..., · Thinking..., * Tempering…
+  if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★*]\s+\w/.test(t)) return true;
+  // Status lines
+  if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return true;
+  return false;
+}
+
 export class Claude {
   private config: ClaudeConfig;
   private mcpConfigPath: string;
@@ -710,61 +732,54 @@ export class Claude {
     this._busy = true;
 
     try {
-      // Snapshot pane before sending so we can find new content
+      // Snapshot pane length before sending — we only care about content after this point
       const beforePane = this.capturePane();
-      const beforeLines = beforePane.split("\n").length;
+      const beforeLen = beforePane.length;
 
       this.sendKeys(prompt);
       await sleep(1500);
 
       const startTime = Date.now();
+      let sawEcho = false;
+
       while (Date.now() - startTime < timeoutMs) {
         await sleep(POLL_INTERVAL_MS);
         const pane = this.capturePane();
 
-        // Look for the idle prompt after our input
-        // Find our prompt echo, then look for content after it and a new ❯
-        const promptEcho = `❯ ${prompt.slice(0, 40)}`;
+        // Only look at new content (after what was there before we sent)
+        // Use the full pane but find our prompt echo to anchor
+        const promptSlice = prompt.slice(0, 40);
+        const promptEcho = `❯ ${promptSlice}`;
+
+        // Find our echo — must be in new content (after beforeLen chars or near the end)
         const echoIdx = pane.lastIndexOf(promptEcho);
         if (echoIdx === -1) continue;
+        sawEcho = true;
 
-        const afterEcho = pane.slice(echoIdx);
-        // Check if there's a new idle prompt after the response
-        const lines = afterEcho.split("\n");
+        // Everything after our prompt echo
+        const afterEcho = pane.slice(echoIdx + promptEcho.length);
+
+        // Wait for the idle prompt to appear AFTER our echo
+        if (!IDLE_PATTERN.test(afterEcho)) continue;
+
+        // Split into lines and find the idle prompt
+        const allLines = afterEcho.split("\n");
         let responseEnd = -1;
-        for (let i = lines.length - 1; i >= 1; i--) {
-          if (IDLE_PATTERN.test(lines[i])) {
+        for (let i = allLines.length - 1; i >= 0; i--) {
+          if (IDLE_PATTERN.test(allLines[i])) {
             responseEnd = i;
             break;
           }
         }
-        if (responseEnd === -1) continue; // Still working
+        if (responseEnd === -1) continue;
 
-        // Extract response: everything between the prompt echo line and the idle prompt
-        const responseLines = lines.slice(1, responseEnd)
-          .filter(l => {
-            const t = l.trim();
-            if (!t) return false;
-            // TUI chrome
-            if (/^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(t)) return false;
-            if (/^[╭╰│╮╯┌└┐┘├┤┬┴┼]/.test(t)) return false;
-            if (/^\s*⏵⏵/.test(l)) return false;
-            if (/bypass permissions/i.test(t)) return false;
-            if (/[◐◑◒◓]/.test(t)) return false;
-            if (/shift\+tab to cycle/i.test(t)) return false;
-            if (/ctrl\+o to expand/i.test(t)) return false;
-            if (/\? for shortcu/.test(t)) return false;
-            // Spinner decorations (non-● chars) — always noise
-            if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w/.test(t)) return false;
-            // Note: ● marks the START of assistant responses — never filter it
-            // Status lines
-            if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return false;
-            return true;
-          })
+        // Extract and filter
+        const responseLines = allLines.slice(0, responseEnd)
+          .filter(l => !isTuiNoise(l))
           .map(l => l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  "));
 
         const result = responseLines.join("\n").trim();
-        log("debug", `sendAndWait: response="${result.slice(0, 100)}..." (${responseLines.length} lines)`);
+        log("debug", `sendAndWait: prompt="${promptSlice}" response="${result.slice(0, 120)}" (${responseLines.length} lines)`);
         return result;
       }
 
