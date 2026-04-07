@@ -257,7 +257,7 @@ export function createApp(config: GatewayConfig) {
   app.get("/api/session/history", (c) => {
     try {
       const projectDir = join(
-        process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/home/agent", "workspace", ".claude"),
+        join(process.env.HOME || "/home/agent", ".claude"),
         "projects",
         PROJECT_DIR_SUFFIX
       );
@@ -337,16 +337,15 @@ export function createApp(config: GatewayConfig) {
   });
 
   // ── Claude Workspace Files API ──
-  // Bidirectional: edit settings.json / CLAUDE.md individually, or as part of the full config
+  // Workspace files editable via web UI — all under ~/workspace/ (never ~/.claude)
 
   const si = config.selfImprovement || {};
-  const claudeHome = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/home/agent", ".claude");
   const workspaceDir = process.env.HOME || "/home/agent";
 
   const ws = join(workspaceDir, "workspace");
+  const wsClaudeDir = join(ws, ".claude");
   const CLAUDE_FILES: Record<string, string> = {
-    "settings.json": join(claudeHome, "settings.json"),
-    "settings.local.json": join(claudeHome, "settings.local.json"),
+    "settings.local.json": join(wsClaudeDir, "settings.local.json"),
     ".mcp.json": join(ws, ".mcp.json"),
     "CLAUDE.md": join(ws, "CLAUDE.md"),
     "IDENTITY.md": join(ws, "IDENTITY.md"),

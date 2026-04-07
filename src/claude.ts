@@ -60,7 +60,7 @@ export class Claude {
 
   /** Write Claude Code settings that make the TUI tmux-friendly. */
   private writeTmuxSettings(): void {
-    const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/tmp", ".claude");
+    const configDir = join(process.env.HOME || "/home/agent", ".claude");
     mkdirSync(configDir, { recursive: true });
     const settingsPath = join(configDir, "settings.json");
     let settings: Record<string, any> = {};
@@ -553,7 +553,7 @@ export class Claude {
   private async *sendViaSessionFile(prompt: string): AsyncGenerator<{ type: string; content: string }> {
     // Find the current session JSONL file (most recently modified)
     const projectDir = join(
-      process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || "/tmp", "workspace", ".claude"),
+      join(process.env.HOME || "/home/agent", ".claude"),
       "projects",
       PROJECT_DIR_SUFFIX
     );
