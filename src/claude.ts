@@ -542,6 +542,22 @@ export class Claude {
     while (true) {
       await sleep(POLL_INTERVAL_MS);
 
+      // Check if a newer JSONL file appeared (session rotation)
+      try {
+        const files = readdirSync(projectDir)
+          .filter(f => f.endsWith(".jsonl") && !f.includes("/"))
+          .map(f => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length > 0) {
+          const newest = join(projectDir, files[0].name);
+          if (newest !== sessionFile) {
+            log("debug", `sendViaSessionFile: session file changed to ${files[0].name}`);
+            sessionFile = newest;
+            fileSize = 0; // Read from start of new file
+          }
+        }
+      } catch { /* intentional */ }
+
       // Read new content from the file
       let newContent: string;
       try {
