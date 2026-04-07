@@ -732,6 +732,13 @@ export class Claude {
   get usingChannel(): boolean { return this.channelAvailable; }
   get remoteControlUrl(): string | null { return this._remoteControlUrl; }
 
+  /** Update the in-memory config (e.g. after API config save). */
+  updateConfig(config: ClaudeConfig): void {
+    this.config = config;
+    this.writeMcpConfig(config.mcpServers || {});
+    log("info", `Config updated: model=${config.model}`);
+  }
+
   restart(): void {
     log("info", "Restarting Claude session");
     this.close();

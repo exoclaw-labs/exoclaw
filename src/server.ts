@@ -329,6 +329,10 @@ export function createApp(config: GatewayConfig) {
         return c.json({ error: "validation_error", detail: parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") }, 400);
       }
       saveConfigSafe(body);
+      // Push claude config changes to the running instance
+      if (body.claude) {
+        claude.updateConfig(body.claude);
+      }
       audit.log({ event_type: "config_change", detail: "Config updated via API", source: "api" });
       return c.json({ status: "ok" });
     } catch (err) {
