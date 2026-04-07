@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { fetchConfig, saveConfig, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgent, deleteSubAgent } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgentFile, deleteSubAgent, deleteSubAgentFile } from "../composables/useApi";
 import Setup from "./Setup.vue";
 
 const route = useRoute();
@@ -86,12 +86,15 @@ function handleDrop(e: DragEvent) {
 }
 
 // ── Sub-agents ──
-interface SubAgent { name: string; filename: string; content: string }
+interface SubAgent { name: string; files: Record<string, string> }
 const subAgents = ref<SubAgent[]>([]);
-const selectedAgent = ref<string>("__main__"); // "__main__" = main agent, or sub-agent name
-const subAgentContent = ref("");
+const selectedAgent = ref<string>("__main__");
+const activeSubAgentFile = ref("META.md");
+const subAgentFiles = ref<Record<string, string>>({});
 const newAgentName = ref("");
 const savingSubAgent = ref(false);
+
+const OPTIONAL_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "TOOLS.md", "HEARTBEAT.md"];
 
 async function loadSubAgents() {
   subAgents.value = await fetchSubAgents();
@@ -101,25 +104,30 @@ function selectAgent(name: string) {
   selectedAgent.value = name;
   if (name !== "__main__") {
     const a = subAgents.value.find(x => x.name === name);
-    subAgentContent.value = a?.content || "";
+    subAgentFiles.value = a ? { ...a.files } : {};
+    // Default to META.md tab, fallback to first available
+    const files = Object.keys(subAgentFiles.value);
+    activeSubAgentFile.value = files.includes("META.md") ? "META.md" : files[0] || "META.md";
   }
 }
 
-async function saveSelectedSubAgent() {
+async function saveSubAgentCurrentFile() {
   if (selectedAgent.value === "__main__") return;
   savingSubAgent.value = true;
-  const ext = subAgents.value.find(x => x.name === selectedAgent.value)?.filename.endsWith(".json") ? "json" : "md";
-  await saveSubAgent(selectedAgent.value, subAgentContent.value, ext as "md" | "json");
-  await loadSubAgents();
-  savingSubAgent.value = false;
-  msg.value = { type: "success", text: `Agent "${selectedAgent.value}" saved.` };
+  try {
+    await saveSubAgentFile(selectedAgent.value, activeSubAgentFile.value, subAgentFiles.value[activeSubAgentFile.value] || "");
+    await loadSubAgents();
+    msg.value = { type: "success", text: `Saved ${activeSubAgentFile.value}` };
+  } finally {
+    savingSubAgent.value = false;
+  }
 }
 
 async function createSubAgent() {
   const name = newAgentName.value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "-");
   if (!name) return;
-  const starter = `---\nname: ${name}\ndescription: \nschedule: \nmodel: claude-sonnet-4-6\n---\n\n# ${name}\n\nAgent prompt here...\n`;
-  await saveSubAgent(name, starter, "md");
+  await saveSubAgentFile(name, "META.md", `name: ${name}\ndescription: \nschedule: \nmodel: claude-sonnet-4-6\n`);
+  await saveSubAgentFile(name, "CLAUDE.md", `# ${name}\n\nAgent instructions here...\n`);
   newAgentName.value = "";
   await loadSubAgents();
   selectAgent(name);
@@ -130,6 +138,22 @@ async function removeSubAgent(name: string) {
   await deleteSubAgent(name);
   if (selectedAgent.value === name) selectedAgent.value = "__main__";
   await loadSubAgents();
+}
+
+async function addCompanionFile(file: string) {
+  if (selectedAgent.value === "__main__") return;
+  subAgentFiles.value[file] = `# ${file.replace(".md", "")}\n\n`;
+  await saveSubAgentFile(selectedAgent.value, file, subAgentFiles.value[file]);
+  await loadSubAgents();
+  activeSubAgentFile.value = file;
+}
+
+async function removeCompanionFile(file: string) {
+  if (!confirm(`Remove ${file} from this agent?`)) return;
+  await deleteSubAgentFile(selectedAgent.value, file);
+  delete subAgentFiles.value[file];
+  await loadSubAgents();
+  activeSubAgentFile.value = "META.md";
 }
 
 const mdFiles = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "MEMORY.md", "HEARTBEAT.md"];
@@ -589,26 +613,56 @@ onMounted(load);
 
             <!-- Sub-agent editor -->
             <div v-else>
-              <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                  <span class="small fw-semibold">
-                    <i class="bi bi-robot me-1"></i>
-                    .claude/agents/{{ subAgents.find(x => x.name === selectedAgent)?.filename || selectedAgent + '.md' }}
-                  </span>
-                  <button class="btn btn-sm btn-primary" :disabled="savingSubAgent" @click="saveSelectedSubAgent">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
+                  <li v-for="f in ['META.md', 'CLAUDE.md', ...OPTIONAL_FILES.filter(f => subAgentFiles[f] !== undefined)]" :key="f" class="nav-item">
+                    <button
+                      class="nav-link small py-1 px-2 d-flex align-items-center gap-1"
+                      :class="{ active: activeSubAgentFile === f }"
+                      @click="activeSubAgentFile = f"
+                    >
+                      {{ f }}
+                      <span
+                        v-if="f !== 'META.md' && f !== 'CLAUDE.md'"
+                        class="ms-1 text-body-secondary"
+                        style="font-size:10px;line-height:1;cursor:pointer"
+                        @click.stop="removeCompanionFile(f)"
+                        title="Remove file"
+                      >&times;</span>
+                    </button>
+                  </li>
+                </ul>
+                <div class="d-flex gap-2 ms-2 flex-shrink-0">
+                  <!-- Add companion file dropdown -->
+                  <div class="dropdown" v-if="OPTIONAL_FILES.some(f => subAgentFiles[f] === undefined)">
+                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+                      <i class="bi bi-plus"></i>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                      <li v-for="f in OPTIONAL_FILES.filter(f => subAgentFiles[f] === undefined)" :key="f">
+                        <button class="dropdown-item small" @click="addCompanionFile(f)">{{ f }}</button>
+                      </li>
+                    </ul>
+                  </div>
+                  <button class="btn btn-sm btn-primary" :disabled="savingSubAgent" @click="saveSubAgentCurrentFile">
                     <i class="bi bi-save me-1"></i>{{ savingSubAgent ? 'Saving...' : 'Save' }}
                   </button>
                 </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header small fw-semibold">
+                  <i class="bi bi-robot me-1"></i>.claude/agents/{{ selectedAgent }}/{{ activeSubAgentFile }}
+                  <span v-if="activeSubAgentFile === 'META.md'" class="text-body-secondary ms-2 fw-normal">-- frontmatter fields (name, description, schedule, model)</span>
+                </div>
                 <div class="card-body p-0">
                   <textarea
-                    v-model="subAgentContent"
+                    :value="subAgentFiles[activeSubAgentFile] || ''"
+                    @input="(e: any) => subAgentFiles[activeSubAgentFile] = e.target.value"
                     rows="22" class="form-control font-monospace rounded-0 border-0" spellcheck="false" style="resize:vertical"
                   ></textarea>
                 </div>
               </div>
-              <p class="text-body-secondary small mt-2">
-                Sub-agent definition. YAML frontmatter sets <code>name</code>, <code>description</code>, <code>schedule</code>, and <code>model</code>. Body is the agent's prompt.
-              </p>
             </div>
           </div>
         </div>

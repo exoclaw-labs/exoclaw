@@ -994,37 +994,73 @@ export function createApp(config: GatewayConfig) {
   });
 
   // ── Sub-agent Files API ──
-  // CRUD for agent definition files in ~/.claude/agents/
+  // Directory-per-agent: each agent is a folder with META.md, CLAUDE.md, and optional companion files.
+  // ExoClaw auto-generates a flat .md file (agentsDir/<name>.md) from the directory contents.
 
   const agentsDir = join(workspaceDir, "workspace", ".claude", "agents");
+
+  const COMPANION_ORDER = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "TOOLS.md", "HEARTBEAT.md"];
+
+  function stitchAgent(name: string): void {
+    const dir = join(agentsDir, name);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return;
+
+    const metaPath = join(dir, "META.md");
+    const metaContent = existsSync(metaPath) ? readFileSync(metaPath, "utf-8").trim() : `name: ${name}`;
+
+    const sections: string[] = [];
+    // Frontmatter from META.md
+    sections.push(`---\n${metaContent}\n---`);
+
+    // Append companion files in defined order
+    for (const file of COMPANION_ORDER) {
+      const fp = join(dir, file);
+      if (existsSync(fp)) {
+        sections.push(readFileSync(fp, "utf-8"));
+      }
+    }
+
+    const generated = sections.join("\n\n");
+    writeFileSync(join(agentsDir, `${name}.md`), generated);
+  }
 
   app.get("/api/sub-agents", (c) => {
     try {
       mkdirSync(agentsDir, { recursive: true });
-      const files = readdirSync(agentsDir).filter(f => f.endsWith(".md") || f.endsWith(".json"));
-      const agents = files.map(f => {
-        const content = readFileSync(join(agentsDir, f), "utf-8");
-        return { name: f.replace(/\.(md|json)$/, ""), filename: f, content };
-      });
+      const entries = readdirSync(agentsDir, { withFileTypes: true });
+      const agents = entries
+        .filter(e => e.isDirectory())
+        .map(e => {
+          const dir = join(agentsDir, e.name);
+          const files: Record<string, string> = {};
+          for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+            files[f] = readFileSync(join(dir, f), "utf-8");
+          }
+          return { name: e.name, files };
+        });
       return c.json({ agents });
     } catch (err) {
       return c.json({ agents: [] });
     }
   });
 
-  app.put("/api/sub-agents/:name", async (c) => {
+  app.put("/api/sub-agents/:name/:file", async (c) => {
     const name = c.req.param("name");
-    // Sanitize name — only allow alphanumeric, hyphen, underscore
+    const file = c.req.param("file");
     if (!/^[a-z0-9_-]+$/i.test(name)) {
       return c.json({ error: "invalid_name", detail: "Agent name may only contain letters, numbers, hyphens, and underscores" }, 400);
     }
+    if (!/^[A-Z][A-Z0-9_-]*\.md$/.test(file)) {
+      return c.json({ error: "invalid_file", detail: "File must match [A-Z][A-Z0-9_-]*.md" }, 400);
+    }
     try {
-      const { content, ext = "md" } = await c.req.json() as { content: string; ext?: string };
-      const filename = `${name}.${ext === "json" ? "json" : "md"}`;
-      mkdirSync(agentsDir, { recursive: true });
-      writeFileSync(join(agentsDir, filename), content);
-      audit.log({ event_type: "file_write", detail: `Updated sub-agent: ${filename}`, source: "api" });
-      return c.json({ status: "ok", name, filename });
+      const { content } = await c.req.json() as { content: string };
+      const dir = join(agentsDir, name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, file), content);
+      stitchAgent(name);
+      audit.log({ event_type: "file_write", detail: `Updated sub-agent file: ${name}/${file}`, source: "api" });
+      return c.json({ status: "ok", name, file });
     } catch (err) {
       return c.json({ error: "write_failed", detail: String(err) }, 500);
     }
@@ -1035,20 +1071,40 @@ export function createApp(config: GatewayConfig) {
     if (!/^[a-z0-9_-]+$/i.test(name)) {
       return c.json({ error: "invalid_name" }, 400);
     }
-    // Try both .md and .json
+    const dir = join(agentsDir, name);
+    const generated = join(agentsDir, `${name}.md`);
     let deleted = false;
-    for (const ext of ["md", "json"]) {
-      const fp = join(agentsDir, `${name}.${ext}`);
-      try {
-        if (existsSync(fp)) {
-          rmSync(fp);
-          deleted = true;
-          audit.log({ event_type: "file_write", detail: `Deleted sub-agent: ${name}.${ext}`, source: "api" });
-          break;
-        }
-      } catch {}
+    if (existsSync(dir) && statSync(dir).isDirectory()) {
+      rmSync(dir, { recursive: true });
+      deleted = true;
+    }
+    if (existsSync(generated)) {
+      rmSync(generated);
+      deleted = true;
+    }
+    if (deleted) {
+      audit.log({ event_type: "file_write", detail: `Deleted sub-agent: ${name}`, source: "api" });
     }
     return deleted ? c.json({ status: "ok" }) : c.json({ error: "not_found" }, 404);
+  });
+
+  app.delete("/api/sub-agents/:name/:file", (c) => {
+    const name = c.req.param("name");
+    const file = c.req.param("file");
+    if (!/^[a-z0-9_-]+$/i.test(name)) {
+      return c.json({ error: "invalid_name" }, 400);
+    }
+    if (file === "META.md" || file === "CLAUDE.md") {
+      return c.json({ error: "protected_file", detail: "Cannot delete META.md or CLAUDE.md" }, 400);
+    }
+    const fp = join(agentsDir, name, file);
+    if (!existsSync(fp)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    rmSync(fp);
+    stitchAgent(name);
+    audit.log({ event_type: "file_write", detail: `Deleted sub-agent file: ${name}/${file}`, source: "api" });
+    return c.json({ status: "ok" });
   });
 
   // ── Approvals API ──

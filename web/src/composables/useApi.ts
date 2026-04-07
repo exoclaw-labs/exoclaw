@@ -42,21 +42,27 @@ export async function completeSetup(browserTool: string, browserApiKey?: string,
   })).json();
 }
 
-export async function fetchSubAgents(): Promise<{ name: string; filename: string; content: string }[]> {
-  const data = await (await fetch("/api/sub-agents")).json() as { agents: { name: string; filename: string; content: string }[] };
+export interface SubAgent { name: string; files: Record<string, string> }
+
+export async function fetchSubAgents(): Promise<SubAgent[]> {
+  const data = await (await fetch("/api/sub-agents")).json() as { agents: SubAgent[] };
   return data.agents || [];
 }
 
-export async function saveSubAgent(name: string, content: string, ext: "md" | "json" = "md") {
-  return (await fetch(`/api/sub-agents/${encodeURIComponent(name)}`, {
+export async function saveSubAgentFile(agentName: string, file: string, content: string) {
+  return (await fetch(`/api/sub-agents/${encodeURIComponent(agentName)}/${encodeURIComponent(file)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content, ext }),
+    body: JSON.stringify({ content }),
   })).json();
 }
 
 export async function deleteSubAgent(name: string) {
   return (await fetch(`/api/sub-agents/${encodeURIComponent(name)}`, { method: "DELETE" })).json();
+}
+
+export async function deleteSubAgentFile(agentName: string, file: string) {
+  return (await fetch(`/api/sub-agents/${encodeURIComponent(agentName)}/${encodeURIComponent(file)}`, { method: "DELETE" })).json();
 }
 
 export function chatWsUrl(sessionId?: string): string {
