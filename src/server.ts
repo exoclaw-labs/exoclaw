@@ -41,6 +41,7 @@ import { syncClaudeMd } from "./claude-md.js";
 import { PROJECT_DIR_SUFFIX } from "./constants.js";
 import { GatewayConfigSchema } from "./schemas.js";
 import { AgentRegistry } from "./agent-registry.js";
+import { reviewAgentRun, isAgentJob } from "./agent-review.js";
 
 // ── Schemas ──
 
@@ -638,6 +639,11 @@ export function createApp(config: GatewayConfig) {
     });
     // Broadcast to SSE clients (dashboard, web UI)
     broadcastSSE("cron_complete", { job_id: job.id, name: job.name, status: run.status, result: run.result?.slice(0, 500) });
+
+    // Sub-agent self-improvement: review the run and update the agent's CLAUDE.md
+    if (isAgentJob(job.name)) {
+      reviewAgentRun(job.name, job, run);
+    }
   });
 
   if (cronConfig.enabled) {
