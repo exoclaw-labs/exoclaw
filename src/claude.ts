@@ -369,42 +369,8 @@ export class Claude {
     return args;
   }
 
-  // ── Primary I/O: MCP Channel ──
+  // ── I/O ──
 
-  /**
-   * Send a message through the MCP channel server.
-   * Returns the reply text, or null if the channel is unavailable.
-   */
-  async sendViaChannel(prompt: string): Promise<string | null> {
-    if (!this.channelAvailable) return null;
-
-    const requestId = crypto.randomUUID();
-
-    try {
-      const r = await fetch(`http://127.0.0.1:${CHANNEL_PORT}/push`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, request_id: requestId, source: "gateway" }),
-        signal: AbortSignal.timeout(5 * 60 * 1000),
-      });
-
-      if (!r.ok) return null;
-      const data = await r.json() as { response: string; request_id: string };
-      return data.response;
-    } catch (err) {
-      log("warn", `Channel send failed: ${err}`);
-      return null;
-    }
-  }
-
-  // ── Fallback I/O: tmux capture-pane ──
-
-  /**
-   * Send a message via the MCP channel server.
-   * The channel server pushes a notification to Claude, Claude processes
-   * it and calls the reply tool, and the response comes back via HTTP.
-   * Falls back to claude -p if the channel isn't available.
-   */
   async *send(prompt: string): AsyncGenerator<{ type: string; content: string }> {
     if (this._busy) throw new Error("Session is busy");
 
@@ -420,61 +386,7 @@ export class Claude {
     }
   }
 
-  private async *sendViaPrint(prompt: string): AsyncGenerator<{ type: string; content: string }> {
-    const { spawn } = await import("child_process");
-    const { createInterface } = await import("readline");
-
-    const args = [
-      "-p",
-      "--output-format", "stream-json",
-      "--verbose",
-      "--continue",
-      "--model", this.config.model,
-      "--permission-mode", this.config.permissionMode,
-      prompt,
-    ];
-
-    log("info", `Spawning: claude -p --continue "${prompt.slice(0, 50)}..."`);
-
-    const proc = spawn("claude", args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
-      cwd: join(process.env.HOME || "/tmp", "workspace"),
-    });
-    proc.stdin!.end();
-
-    const rl = createInterface({ input: proc.stdout! });
-
-    for await (const line of lineIterator(rl)) {
-      if (!line.trim()) continue;
-      let event: any;
-      try { event = JSON.parse(line); } catch { continue; }
-
-      if (event.type === "assistant") {
-        const content = event.message?.content;
-        if (content) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              yield { type: "chunk", content: block.text };
-            }
-          }
-        }
-      }
-
-      if (event.type === "result") {
-        yield { type: "done", content: event.result || "" };
-        break;
-      }
-    }
-
-    // Ensure process exits
-    await new Promise<void>((resolve) => {
-      proc.on("exit", () => resolve());
-      if (proc.exitCode !== null) resolve();
-    });
-  }
-
-  // Keep sendViaTmux as fallback (used by webhook if needed)
+  // Fallback: tmux capture-pane polling (used when session file unavailable)
   private async *sendViaTmux(prompt: string): AsyncGenerator<{ type: string; content: string }> {
     this.sendKeys(prompt);
     await sleep(1500);
@@ -806,28 +718,6 @@ export class Claude {
     }
     this._alive = false;
     log("info", "Claude session closed");
-  }
-}
-
-/** Convert a readline interface into an async iterator of lines. */
-async function* lineIterator(rl: ReturnType<typeof import("readline").createInterface>): AsyncGenerator<string> {
-  const queue: string[] = [];
-  let resolve: (() => void) | null = null;
-  let done = false;
-
-  rl.on("line", (line: string) => {
-    queue.push(line);
-    if (resolve) { const r = resolve; resolve = null; r(); }
-  });
-  rl.on("close", () => {
-    done = true;
-    if (resolve) { const r = resolve; resolve = null; r(); }
-  });
-
-  while (true) {
-    while (queue.length > 0) yield queue.shift()!;
-    if (done) return;
-    await new Promise<void>((r) => { resolve = r; });
   }
 }
 

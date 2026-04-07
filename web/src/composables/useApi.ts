@@ -60,9 +60,3 @@ export async function deleteSubAgent(name: string) {
 export async function deleteSubAgentFile(agentName: string, file: string) {
   return (await fetch(`/api/sub-agents/${encodeURIComponent(agentName)}/${encodeURIComponent(file)}`, { method: "DELETE" })).json();
 }
-
-export function chatWsUrl(sessionId?: string): string {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const base = `${proto}//${location.host}/ws/chat`;
-  return sessionId ? `${base}?session_id=${sessionId}` : base;
-}

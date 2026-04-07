@@ -757,7 +757,8 @@ export function createApp(config: GatewayConfig) {
   // Expose tmux pane content so the UI can show login prompts / session state
   app.get("/api/session/pane", (c) => {
     try {
-      const content = execSync(`tmux capture-pane -t claude -p -S -50 2>&1`, { encoding: "utf-8" });
+      const lines = Math.min(Number(c.req.query("lines")) || 50, 500);
+      const content = execSync(`tmux capture-pane -t claude -p -S -${lines} 2>&1`, { encoding: "utf-8" });
       return c.json({ content });
     } catch {
       return c.json({ content: "", error: "no_session" });

@@ -1,15 +1,39 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted, computed } from "vue";
+import { ref, nextTick, computed, watch, onMounted, onUnmounted } from "vue";
 import { marked } from "marked";
-import { useChatStore } from "../composables/useChatStore";
 import { fetchConfig, saveConfig } from "../composables/useApi";
 
-const { state, send, startPanePolling, stopPanePolling } = useChatStore();
+const pane = ref("");
 const input = ref("");
+const busy = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
-const verbose = ref(false);
-const showPane = ref(false);
+let timer: ReturnType<typeof setInterval>;
+
+// ── Pane polling ──
+function scrollBottom() {
+  nextTick(() => { if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight; });
+}
+
+async function loadPane() {
+  try {
+    const content = (await (await fetch("/api/session/pane?lines=300")).json()).content || "";
+    if (content !== pane.value) pane.value = content;
+  } catch {}
+}
+
+async function sendKeys(keys: string) {
+  busy.value = true;
+  await fetch("/api/session/keys", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ keys }),
+  });
+  await new Promise(r => setTimeout(r, 500));
+  await loadPane();
+  busy.value = false;
+  nextTick(() => inputEl.value?.focus());
+}
 
 // ── Model selector ──
 const showModes = ref(false);
@@ -83,29 +107,22 @@ async function toggleRemoteControl() {
 
 async function restartSession() {
   closeAllPopups();
-  state.messages.push({ role: "assistant", content: "Restarting session..." });
   try { await fetch("/api/session/restart", { method: "POST" }); } catch {}
   restartNeeded.value = false;
 }
 
-// ── Slash commands (native + skills) ──
+// ── Slash commands ──
 const showSlash = ref(false);
 const customSkills = ref<{ name: string; content: string }[]>([]);
 const slashFilter = ref("");
-
-// Commands handled client-side (never sent to backend)
-const LOCAL_COMMANDS = new Set(["clear", "model"]);
-
-// Commands sent as tmux keystrokes to Claude Code CLI (not as prompts)
+const LOCAL_COMMANDS = new Set(["model"]);
 const CLI_COMMANDS = new Set([
   "compact", "cost", "status", "help", "diff", "plan", "review",
   "security-review", "context", "effort", "fast", "rewind", "usage",
   "permissions", "mcp", "hooks", "agents", "init", "doctor",
 ]);
 
-// Native Claude Code commands shown in the slash menu
 const nativeCommands = [
-  { name: "clear", desc: "Clear conversation history", icon: "bi-x-circle" },
   { name: "compact", desc: "Compact conversation to save context", icon: "bi-arrows-collapse" },
   { name: "model", desc: "Change the AI model", icon: "bi-cpu" },
   { name: "cost", desc: "Show token usage statistics", icon: "bi-cash-coin" },
@@ -113,19 +130,10 @@ const nativeCommands = [
   { name: "help", desc: "Show help and available commands", icon: "bi-question-circle" },
   { name: "diff", desc: "View uncommitted changes", icon: "bi-file-diff" },
   { name: "review", desc: "Review code changes", icon: "bi-search" },
-  { name: "security-review", desc: "Security analysis of pending changes", icon: "bi-shield-check" },
   { name: "plan", desc: "Enter plan mode", icon: "bi-map" },
   { name: "effort", desc: "Set model effort level", icon: "bi-speedometer" },
   { name: "context", desc: "Visualize context usage", icon: "bi-pie-chart" },
   { name: "fast", desc: "Toggle fast mode", icon: "bi-lightning-charge" },
-  { name: "rewind", desc: "Rewind conversation to checkpoint", icon: "bi-skip-backward" },
-  { name: "usage", desc: "Show plan usage and rate limits", icon: "bi-bar-chart" },
-  { name: "permissions", desc: "Manage tool permissions", icon: "bi-shield-lock" },
-  { name: "mcp", desc: "Manage MCP server connections", icon: "bi-plug" },
-  { name: "hooks", desc: "View hook configurations", icon: "bi-link-45deg" },
-  { name: "agents", desc: "Manage agent configurations", icon: "bi-people" },
-  { name: "init", desc: "Initialize project with CLAUDE.md", icon: "bi-file-earmark-plus" },
-  { name: "doctor", desc: "Diagnose installation issues", icon: "bi-heart-pulse" },
 ];
 
 const allCommands = computed(() => {
@@ -141,128 +149,43 @@ async function loadSkills() {
   try { customSkills.value = ((await (await fetch("/api/skills")).json()).skills || []); } catch {}
 }
 
-async function sendTmuxKeys(keys: string) {
-  try {
-    await fetch("/api/session/keys", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ keys }),
-    });
-  } catch {}
-}
-
 function handleSlashCommand(name: string): boolean {
   if (LOCAL_COMMANDS.has(name)) {
-    if (name === "clear") {
-      state.messages.length = 0;
-      state.messages.push({ role: "assistant", content: "Conversation cleared." });
-    } else if (name === "model") {
-      showModes.value = true;
-      showSlash.value = false;
-    }
+    if (name === "model") { showModes.value = true; showSlash.value = false; }
     return true;
   }
-  if (CLI_COMMANDS.has(name)) {
-    // Send as tmux keystrokes — Claude Code CLI intercepts these
-    sendTmuxKeys(`"/${name}" Enter`);
-    state.messages.push({ role: "assistant", content: `Sent \`/${name}\` to Claude Code session.` });
-    scrollBottom();
-    return true;
-  }
-  return false; // Not a recognized command — treat as prompt
+  if (CLI_COMMANDS.has(name)) { sendKeys(`"/${name}" Enter`); return true; }
+  return false;
 }
 
 function selectCommand(name: string) {
   closeAllPopups();
   if (handleSlashCommand(name)) return;
-  // Custom skill — send as regular prompt
   input.value = `/${name}`;
   nextTick(() => { inputEl.value?.focus(); handleSend(); });
 }
 
-// ── File upload (+) ──
+// ── File upload ──
 const fileInputEl = ref<HTMLInputElement | null>(null);
-const uploadedFiles = ref<{ name: string; content: string }[]>([]);
-
-function triggerFileUpload() {
-  closeAllPopups();
-  fileInputEl.value?.click();
-}
-
+function triggerFileUpload() { closeAllPopups(); fileInputEl.value?.click(); }
 function handleFileUpload(e: Event) {
   const files = (e.target as HTMLInputElement).files;
   if (!files) return;
   for (const file of Array.from(files)) {
-    // Max 1MB text files
     if (file.size > 1024 * 1024) continue;
     const reader = new FileReader();
     reader.onload = () => {
       const content = reader.result as string;
-      uploadedFiles.value.push({ name: file.name, content });
-      // Append file content as context in the message
       const tag = `[File: ${file.name}]\n\`\`\`\n${content.slice(0, 10000)}\n\`\`\``;
       input.value = input.value ? `${input.value}\n\n${tag}` : tag;
       nextTick(() => { autoResize(); inputEl.value?.focus(); });
     };
     reader.readAsText(file);
   }
-  // Reset so same file can be re-selected
   if (fileInputEl.value) fileInputEl.value.value = "";
 }
 
-// ── Tool classification ──
-function isEditTool(name?: string): boolean {
-  if (!name) return false;
-  const n = name.toLowerCase();
-  return n.includes("edit") || n.includes("write") || n.includes("notebook");
-}
-
-// Try to parse diff-like content from edit tool args
-function parseDiff(content: string): { file: string; oldStr: string; newStr: string } | null {
-  try {
-    const parsed = JSON.parse(content);
-    if (parsed.file_path && (parsed.old_string !== undefined || parsed.new_string !== undefined)) {
-      return {
-        file: parsed.file_path,
-        oldStr: parsed.old_string || "",
-        newStr: parsed.new_string || "",
-      };
-    }
-    // Write tool: just show content as "added"
-    if (parsed.file_path && parsed.content) {
-      return { file: parsed.file_path, oldStr: "", newStr: parsed.content.slice(0, 500) };
-    }
-  } catch {
-    // Content is the "toolName: {json}" format from the server
-    const match = content.match(/^[\w]+:\s*(\{.*\})$/s);
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[1]);
-        if (parsed.file_path && (parsed.old_string !== undefined || parsed.new_string !== undefined)) {
-          return { file: parsed.file_path, oldStr: parsed.old_string || "", newStr: parsed.new_string || "" };
-        }
-      } catch {}
-    }
-  }
-  return null;
-}
-
-const expandedDiffs = ref<Set<number>>(new Set());
-
-function toggleDiff(idx: number) {
-  if (expandedDiffs.value.has(idx)) expandedDiffs.value.delete(idx);
-  else expandedDiffs.value.add(idx);
-}
-
-// ── Chat helpers ──
-function scrollBottom() {
-  nextTick(() => { if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight; });
-}
-
-function renderMd(text: string): string {
-  return marked.parse(text, { async: false }) as string;
-}
-
+// ── Input helpers ──
 function autoResize() {
   const el = inputEl.value;
   if (!el) return;
@@ -275,14 +198,9 @@ function handleSend() {
   if (!text) return;
   input.value = "";
   nextTick(autoResize);
-
-  // Check if it's a slash command
   const slashMatch = text.match(/^\/(\S+)$/);
   if (slashMatch && handleSlashCommand(slashMatch[1])) return;
-
-  send(text);
-  scrollBottom();
-  nextTick(() => inputEl.value?.focus());
+  sendKeys(`"${text.replace(/"/g, '\\"')}" Enter`);
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -290,18 +208,12 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === "/" && !input.value) { e.preventDefault(); showSlash.value = true; showModes.value = false; }
 }
 
-function copyText(text: string) { navigator.clipboard.writeText(text); }
-
-function closeAllPopups() {
-  showSlash.value = false;
-  showModes.value = false;
-  slashFilter.value = "";
+function renderMd(text: string): string {
+  return marked.parse(text, { async: false }) as string;
 }
 
-function onDocClick(e: MouseEvent) {
-  if (!(e.target as HTMLElement).closest(".popup-anchor")) closeAllPopups();
-}
-
+function closeAllPopups() { showSlash.value = false; showModes.value = false; slashFilter.value = ""; }
+function onDocClick(e: MouseEvent) { if (!(e.target as HTMLElement).closest(".popup-anchor")) closeAllPopups(); }
 function onWindowKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") { closeAllPopups(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -310,223 +222,235 @@ function onWindowKeydown(e: KeyboardEvent) {
   inputEl.value?.focus();
 }
 
-onMounted(() => {
-  scrollBottom(); loadConfig(); loadSkills();
-  window.addEventListener("keydown", onWindowKeydown);
-  document.addEventListener("click", onDocClick);
-});
-onUnmounted(() => {
-  window.removeEventListener("keydown", onWindowKeydown);
-  document.removeEventListener("click", onDocClick);
-});
-
-watch(() => state.messages.length, scrollBottom);
-watch(() => state.messages[state.messages.length - 1]?.content, scrollBottom);
-watch(() => state.busy, (busy) => { if (!busy) nextTick(() => inputEl.value?.focus()); });
-
-// Pane polling: start/stop based on toggle
-const paneEl = ref<HTMLElement | null>(null);
-watch(showPane, (on) => { if (on) startPanePolling(); else stopPanePolling(); });
-watch(() => state.paneContent, () => {
-  nextTick(() => { if (paneEl.value) paneEl.value.scrollTop = paneEl.value.scrollHeight; });
-});
-
 const currentModel = computed(() => {
   const m = config.value?.claude?.model || "";
   return m.replace("claude-", "").replace(/-\d+$/, "") || "—";
 });
-const statusText = computed(() => {
-  if (!state.connected) return "Disconnected";
-  if (state.busy) return "Responding...";
-  if (state.agentBusy) return "Agent working...";
-  if (!state.agentAlive) return "Agent offline";
-  return "Ready";
-});
 
-const isWorking = computed(() => state.busy || state.agentBusy);
+// ── Parse tmux pane into chat blocks ──
+interface ChatBlock {
+  type: "user" | "assistant" | "tool" | "diff" | "thinking" | "status";
+  content: string;
+  file?: string;      // for diff blocks
+  added?: string[];   // diff added lines
+  removed?: string[]; // diff removed lines
+}
 
-/** Show tmux pane content, stripping the Claude Code input prompt area.
- *  Removes the trailing block: ────, ❯ prompt, ────, ⏵⏵ permissions line */
-const paneDisplay = computed(() => {
-  const raw = state.paneContent;
-  if (!raw) return "";
+const expandedBlocks = ref<Set<number>>(new Set());
+function toggleBlock(idx: number) {
+  if (expandedBlocks.value.has(idx)) expandedBlocks.value.delete(idx);
+  else expandedBlocks.value.add(idx);
+}
+
+const chatBlocks = computed((): ChatBlock[] => {
+  const raw = pane.value;
+  if (!raw) return [];
   const lines = raw.split("\n");
-  // Find the prompt line (❯) and walk back to the first ──── divider above it
-  let promptIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (/^❯/.test(lines[i])) { promptIdx = i; break; }
+  const blocks: ChatBlock[] = [];
+  let i = 0;
+
+  // Skip leading noise (empty lines, dividers, status)
+  const isNoise = (l: string) =>
+    !l.trim() ||
+    /^[─━\u2500\u2501]{4,}/.test(l) ||
+    /^\s*[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]/.test(l) ||
+    /bypass permissions/i.test(l) ||
+    /Remote Control/i.test(l) ||
+    /\/remote-control is active/.test(l) ||
+    /shift\+tab to cycle/.test(l) ||
+    /ctrl\+o to expand/.test(l) ||
+    /\? for shortcu/.test(l) ||
+    /Please upgrade/.test(l) ||
+    /Claude Code has switched/.test(l) ||
+    /^⏵⏵/.test(l.trim()) ||
+    /[◐◑◒◓]\s*(low|medium|high|max)\s*·\s*\/effort/.test(l);
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // User prompt: ❯ text
+    if (/^❯\s+\S/.test(line)) {
+      const text = line.replace(/^❯\s+/, "");
+      blocks.push({ type: "user", content: text });
+      i++;
+      continue;
+    }
+
+    // Idle prompt at end — skip
+    if (/^❯\s*$/.test(line)) { i++; continue; }
+
+    // Tool use: "  Edited file", "  Ran N bash", "  Read N files", etc.
+    const toolMatch = line.match(/^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s+(.*)/);
+    if (toolMatch) {
+      const toolName = toolMatch[1];
+      const detail = toolMatch[2];
+
+      // Check if this is an edit with diff content following
+      if (toolName === "Edited" || toolName === "Wrote") {
+        const file = detail;
+        const added: string[] = [];
+        const removed: string[] = [];
+        // Collect ⎿ diff lines
+        let j = i + 1;
+        while (j < lines.length && /^\s{2}⎿/.test(lines[j])) {
+          const dl = lines[j].replace(/^\s{2}⎿\s?/, "");
+          if (dl.startsWith("+") || dl.startsWith(" +")) added.push(dl.replace(/^\s?\+\s?/, ""));
+          else if (dl.startsWith("-") || dl.startsWith(" -")) removed.push(dl.replace(/^\s?-\s?/, ""));
+          j++;
+        }
+        if (added.length || removed.length) {
+          blocks.push({ type: "diff", content: `${toolName} ${file}`, file, added, removed });
+        } else {
+          blocks.push({ type: "tool", content: `${toolName} ${file}` });
+        }
+        i = j;
+        continue;
+      }
+
+      // Other tools — collect ⎿ output lines
+      let toolOutput = `${toolName} ${detail}`;
+      let j = i + 1;
+      while (j < lines.length && /^\s{2}⎿/.test(lines[j])) {
+        j++;
+      }
+      blocks.push({ type: "tool", content: toolOutput });
+      i = j;
+      continue;
+    }
+
+    // Thinking indicator
+    if (/\(thinking\)/.test(line) || /^\s*●\s/.test(line)) {
+      i++;
+      continue;
+    }
+
+    // Noise — skip
+    if (isNoise(line)) { i++; continue; }
+
+    // Assistant text — collect consecutive non-prompt, non-tool lines
+    let text = "";
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^❯/.test(l)) break;
+      if (/^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s/.test(l)) break;
+      if (isNoise(l)) { i++; continue; }
+      // Strip leading "● " or "  ⎿  " prefixes from assistant text
+      const cleaned = l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  ");
+      text += (text ? "\n" : "") + cleaned;
+      i++;
+    }
+    if (text.trim()) {
+      blocks.push({ type: "assistant", content: text.trim() });
+    }
   }
-  if (promptIdx === -1) return lines.filter(l => l.trim() !== "").join("\n");
-  let startIdx = promptIdx;
-  for (let i = promptIdx - 1; i >= 0; i--) {
-    if (/^[─━─\u2500\u2501]{4,}/.test(lines[i])) { startIdx = i; break; }
-  }
-  return lines.slice(0, startIdx).filter(l => l.trim() !== "").join("\n");
+
+  return blocks;
 });
 
-// On mobile, which panel is active
-const mobileView = ref<'chat' | 'pane'>('chat');
+watch(chatBlocks, scrollBottom);
+onMounted(() => {
+  loadPane(); loadConfig(); loadSkills();
+  timer = setInterval(loadPane, 2000);
+  window.addEventListener("keydown", onWindowKeydown);
+  document.addEventListener("click", onDocClick);
+});
+onUnmounted(() => {
+  clearInterval(timer);
+  window.removeEventListener("keydown", onWindowKeydown);
+  document.removeEventListener("click", onDocClick);
+});
 </script>
 
 <template>
-  <div class="code-panel d-flex flex-column h-100">
+  <div class="chat-panel d-flex flex-column h-100">
     <!-- Header -->
-    <div class="code-header">
+    <div class="chat-header">
       <div class="d-flex align-items-center gap-2">
         <i class="bi bi-chat-dots text-primary" style="font-size:14px"></i>
         <span class="fw-semibold" style="font-size:12px">Chat</span>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <button class="header-btn" :class="{ active: verbose }" @click="verbose = !verbose"
-          :title="verbose ? 'Hide tool details' : 'Show tool details'">
-          <i class="bi" :class="verbose ? 'bi-eye-fill' : 'bi-eye'"></i>
-        </button>
-        <span class="status-text">{{ statusText }}</span>
-        <span class="status-dot" :class="{
-          connected: state.connected && !isWorking,
-          busy: isWorking,
-          disconnected: !state.connected || !state.agentAlive,
-        }"></span>
+        <span class="status-text" style="font-size:10px;opacity:0.5">tmux</span>
       </div>
     </div>
 
-    <!-- Body: chat + pane side by side -->
-    <div class="code-body">
-      <!-- Chat panel -->
-      <div ref="scrollEl" class="chat-side" :class="{ 'mobile-hidden': showPane && mobileView === 'pane' }">
-        <div v-if="!state.messages.length" class="h-100 d-flex flex-column align-items-center justify-content-center text-body-secondary px-4">
-          <i class="bi bi-braces" style="font-size:40px;opacity:0.12"></i>
-          <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask {{ agentName }} to write code, fix bugs, refactor, or explain.</p>
-        </div>
-
-        <template v-for="(m, i) in state.messages" :key="i">
-          <!-- User -->
-          <div v-if="m.role === 'user'" class="msg msg-user">
-            <div class="msg-label">You</div>
-            <div class="msg-body">{{ m.content }}</div>
-          </div>
-
-          <!-- Assistant -->
-          <div v-else-if="m.role === 'assistant'" class="msg msg-assistant">
-            <div class="msg-label">{{ agentName }}</div>
-            <div class="msg-body msg-md">
-              <div v-html="renderMd(m.content)" class="chat-md"></div>
-              <button class="copy-btn" @click="copyText(m.content)" title="Copy"><i class="bi bi-clipboard"></i></button>
-            </div>
-          </div>
-
-          <!-- Thinking -->
-          <div v-else-if="m.role === 'thinking'" class="tool-line thinking-line">
-            <i class="bi bi-lightbulb"></i>
-            <span class="tool-line-label">Thinking</span>
-            <span class="tool-line-detail">{{ m.content.slice(0, 80) }}{{ m.content.length > 80 ? '...' : '' }}</span>
-          </div>
-
-          <!-- Tool calls -->
-          <template v-else-if="m.role === 'tool'">
-            <!-- Edit tool → diff box -->
-            <div v-if="isEditTool(m.toolName) && parseDiff(m.content)" class="diff-box">
-              <div class="diff-header">
-                <i class="bi bi-pencil-square diff-icon"></i>
-                <span class="diff-file">{{ parseDiff(m.content)!.file.split('/').pop() }}</span>
-                <span class="diff-path">{{ parseDiff(m.content)!.file }}</span>
-              </div>
-              <div class="diff-body" :class="{ 'diff-collapsed': !expandedDiffs.has(i) }">
-                <template v-if="parseDiff(m.content)!.oldStr">
-                  <div v-for="(line, li) in parseDiff(m.content)!.oldStr.split('\n')" :key="'r'+li" class="diff-line diff-removed">
-                    <span class="diff-gutter">-</span><span>{{ line }}</span>
-                  </div>
-                </template>
-                <template v-if="parseDiff(m.content)!.newStr">
-                  <div v-for="(line, li) in parseDiff(m.content)!.newStr.split('\n')" :key="'a'+li" class="diff-line diff-added">
-                    <span class="diff-gutter">+</span><span>{{ line }}</span>
-                  </div>
-                </template>
-              </div>
-              <button v-if="parseDiff(m.content)!.oldStr.split('\n').length + parseDiff(m.content)!.newStr.split('\n').length > 8" class="diff-expand" @click="toggleDiff(i)">
-                {{ expandedDiffs.has(i) ? 'Show less' : 'Show more' }}
-              </button>
-            </div>
-
-            <!-- Other tools: shown in verbose mode -->
-            <div v-else-if="verbose" class="tool-verbose">
-              <div class="tool-verbose-header">
-                <i class="bi" :class="{
-                  'bi-terminal': m.toolName?.toLowerCase().includes('bash'),
-                  'bi-file-earmark-text': m.toolName?.toLowerCase().includes('read'),
-                  'bi-search': m.toolName?.toLowerCase().includes('glob') || m.toolName?.toLowerCase().includes('grep'),
-                  'bi-wrench': !m.toolName,
-                }"></i>
-                <span>{{ m.toolName || 'Tool' }}</span>
-              </div>
-              <pre class="tool-verbose-body">{{ m.content.slice(0, 600) }}{{ m.content.length > 600 ? '\n...' : '' }}</pre>
-            </div>
-          </template>
-
-          <!-- Error -->
-          <div v-else-if="m.role === 'error'" class="msg-error">
-            <i class="bi bi-exclamation-triangle"></i> {{ m.content }}
-          </div>
-        </template>
-
-        <div v-if="isWorking" class="busy-bar">
-          <span class="busy-spinner"></span>
-          <span>{{ statusText }}</span>
-        </div>
+    <!-- Messages -->
+    <div ref="scrollEl" class="flex-grow-1 overflow-auto chat-messages" style="min-height:0">
+      <div v-if="!chatBlocks.length" class="h-100 d-flex flex-column align-items-center justify-content-center text-body-secondary px-4">
+        <i class="bi bi-chat-dots" style="font-size:40px;opacity:0.12"></i>
+        <p class="mt-2 mb-0 small text-center" style="max-width:260px">Ask {{ agentName }} to write code, fix bugs, refactor, or explain.</p>
       </div>
 
-      <!-- Pane toggle rail -->
-      <button class="pane-toggle" @click="showPane = !showPane; if (showPane) mobileView = 'pane'; else mobileView = 'chat';"
-        :title="showPane ? 'Hide session' : 'Show session'">
-        <i class="bi" :class="showPane ? 'bi-chevron-right' : 'bi-chevron-left'"></i>
-      </button>
-
-      <!-- Session pane -->
-      <div v-if="showPane" class="pane-side" :class="{ 'mobile-hidden': mobileView === 'chat' }">
-        <div class="pane-header">
-          <i class="bi bi-terminal" style="font-size:12px"></i>
-          <span>Session</span>
-          <!-- Mobile: switch back to chat -->
-          <button class="pane-mobile-back" @click="mobileView = 'chat'">
-            <i class="bi bi-chat-dots"></i> Chat
-          </button>
+      <template v-for="(b, i) in chatBlocks" :key="i">
+        <!-- User bubble (right) -->
+        <div v-if="b.type === 'user'" class="bubble-row bubble-right">
+          <div class="bubble bubble-user">{{ b.content }}</div>
         </div>
-        <pre ref="paneEl" class="pane-content">{{ paneDisplay || 'Waiting for session output...' }}</pre>
+
+        <!-- Assistant bubble (left) -->
+        <div v-else-if="b.type === 'assistant'" class="bubble-row bubble-left">
+          <div class="bubble bubble-assistant">
+            <div v-html="renderMd(b.content)" class="chat-md"></div>
+          </div>
+        </div>
+
+        <!-- Tool pill (center) -->
+        <div v-else-if="b.type === 'tool'" class="tool-pill">
+          <i class="bi" :class="{
+            'bi-terminal': /Ran/.test(b.content),
+            'bi-file-earmark-text': /Read/.test(b.content),
+            'bi-search': /Searched|Glob|Grep|Listed/.test(b.content),
+            'bi-pencil-square': /Edited|Wrote/.test(b.content),
+            'bi-wrench': true,
+          }"></i>
+          <span>{{ b.content }}</span>
+        </div>
+
+        <!-- Diff (compact, expandable) -->
+        <div v-else-if="b.type === 'diff'" class="diff-pill">
+          <div class="diff-pill-header" @click="toggleBlock(i)">
+            <i class="bi bi-pencil-square"></i>
+            <span class="diff-pill-file">{{ (b.file || '').split('/').pop() }}</span>
+            <span class="diff-pill-counts">
+              <span v-if="b.removed?.length" class="diff-count-rm">-{{ b.removed.length }}</span>
+              <span v-if="b.added?.length" class="diff-count-add">+{{ b.added.length }}</span>
+            </span>
+            <i class="bi ms-auto" :class="expandedBlocks.has(i) ? 'bi-chevron-up' : 'bi-chevron-down'" style="font-size:10px"></i>
+          </div>
+          <div v-if="expandedBlocks.has(i)" class="diff-pill-body">
+            <div v-for="(line, li) in (b.removed || [])" :key="'r'+li" class="diff-line diff-removed">
+              <span class="diff-gutter">-</span><span>{{ line }}</span>
+            </div>
+            <div v-for="(line, li) in (b.added || [])" :key="'a'+li" class="diff-line diff-added">
+              <span class="diff-gutter">+</span><span>{{ line }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="busy" class="tool-pill">
+        <span class="busy-spinner"></span>
+        <span>Working...</span>
       </div>
     </div>
 
-    <!-- Input area — always at bottom, full width -->
-    <div class="code-input-area">
+    <!-- Input area -->
+    <div class="chat-input-area">
       <input ref="fileInputEl" type="file" multiple accept=".txt,.md,.ts,.js,.tsx,.jsx,.json,.yml,.yaml,.py,.sh,.css,.html,.xml,.csv,.sql,.rs,.go,.java,.c,.cpp,.h,.rb,.php,.swift,.kt,.toml,.ini,.cfg,.env,.log" style="display:none" @change="handleFileUpload" />
 
-      <!-- Mobile: tab switcher when pane is open -->
-      <div v-if="showPane" class="mobile-tabs">
-        <button class="mobile-tab" :class="{ active: mobileView === 'chat' }" @click="mobileView = 'chat'">
-          <i class="bi bi-chat-dots"></i> Chat
-        </button>
-        <button class="mobile-tab" :class="{ active: mobileView === 'pane' }" @click="mobileView = 'pane'">
-          <i class="bi bi-terminal"></i> Session
-        </button>
-      </div>
-
-      <form @submit.prevent="handleSend" class="code-input-form">
-        <textarea ref="inputEl" v-model="input" :disabled="!state.connected"
-          :placeholder="`Ask ${agentName}...`" autofocus rows="1" class="code-input"
+      <form @submit.prevent="handleSend" class="chat-input-form">
+        <textarea ref="inputEl" v-model="input" :disabled="busy"
+          :placeholder="`Message ${agentName}...`" autofocus rows="1" class="chat-input"
           @keydown="handleKeydown" @input="autoResize"></textarea>
-        <button type="submit" class="code-send-btn" :disabled="!state.connected || !input.trim()">
+        <button type="submit" class="chat-send-btn" :disabled="busy || !input.trim()">
           <i class="bi bi-arrow-up"></i>
         </button>
       </form>
 
-      <!-- Bottom bar: +, /, mode -->
       <div class="input-bottom-bar">
-        <button class="action-btn" @click="triggerFileUpload" title="Upload file">
-          <i class="bi bi-plus-lg"></i>
-        </button>
+        <button class="action-btn" @click="triggerFileUpload" title="Upload file"><i class="bi bi-plus-lg"></i></button>
         <div class="popup-anchor">
-          <button class="action-btn" @click.stop="showSlash = !showSlash; showModes = false" title="Commands">
-            <i class="bi bi-slash"></i>
-          </button>
+          <button class="action-btn" @click.stop="showSlash = !showSlash; showModes = false" title="Commands"><i class="bi bi-slash"></i></button>
           <div v-if="showSlash" class="popup slash-popup">
             <div class="popup-header">
               <input v-model="slashFilter" class="popup-search" placeholder="Search commands..." @keydown.stop autofocus />
@@ -583,139 +507,74 @@ const mobileView = ref<'chat' | 'pane'>('chat');
 </template>
 
 <style scoped>
-.code-panel {
+.chat-panel {
   background: var(--bs-body-bg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 /* ── Header ── */
-.code-header {
+.chat-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg);
   flex-shrink: 0;
 }
-.header-btn {
-  background: none; border: none; color: var(--bs-tertiary-color);
-  font-size: 12px; padding: 2px 6px; cursor: pointer; border-radius: 3px;
-  display: flex; align-items: center; gap: 4px;
-}
-.header-btn:hover { color: var(--bs-secondary-color); background: var(--bs-secondary-bg); }
-.header-btn.active { color: var(--bs-primary); }
-
 .status-text { font-size: 11px; color: var(--bs-tertiary-color); }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.status-dot.connected { background: var(--bs-success); }
-.status-dot.busy { background: var(--bs-warning); animation: pulse 1.5s infinite; }
-.status-dot.disconnected { background: var(--bs-danger); }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-/* ── Body: split layout ── */
-.code-body {
-  flex: 1; display: flex; min-height: 0; overflow: hidden;
+/* ── Messages area ── */
+.chat-messages { padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ── Bubble layout ── */
+.bubble-row { display: flex; }
+.bubble-right { justify-content: flex-end; }
+.bubble-left { justify-content: flex-start; }
+
+.bubble {
+  max-width: 80%; padding: 8px 12px; border-radius: 14px;
+  font-size: 14px; line-height: 1.5; word-break: break-word;
+}
+.bubble-user {
+  background: var(--bs-primary); color: #fff;
+  border-bottom-right-radius: 4px;
+  white-space: pre-wrap;
+}
+.bubble-assistant {
+  background: var(--bs-tertiary-bg); color: var(--bs-body-color);
+  border-bottom-left-radius: 4px;
 }
 
-/* ── Chat side ── */
-.chat-side {
-  flex: 1; overflow-y: auto; min-width: 0;
-  padding: 0;
-}
-
-/* ── Pane toggle rail ── */
-.pane-toggle {
-  flex-shrink: 0; width: 24px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--bs-tertiary-bg);
-  border: none; border-left: 1px solid var(--bs-border-color); border-right: 1px solid var(--bs-border-color);
-  color: var(--bs-tertiary-color);
-  cursor: pointer; font-size: 14px;
-  transition: color 0.15s, background 0.15s;
-}
-.pane-toggle:hover {
+/* ── Tool pills (centered) ── */
+.tool-pill {
+  display: flex; align-items: center; gap: 6px; align-self: center;
+  padding: 3px 10px; border-radius: 12px;
   background: var(--bs-secondary-bg);
-  color: var(--bs-primary);
+  font-size: 11px; color: var(--bs-tertiary-color);
+  max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.tool-pill .bi { font-size: 10px; }
 
-/* ── Pane side ── */
-.pane-side {
-  flex: 1; display: flex; flex-direction: column; min-width: 0;
-  background: #1a1a2e;
+/* ── Diff pills ── */
+.diff-pill {
+  align-self: center; width: 80%; max-width: 400px;
+  border: 1px solid var(--bs-border-color); border-radius: 8px;
+  overflow: hidden; background: var(--bs-tertiary-bg);
 }
-.pane-header {
+.diff-pill-header {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px; font-size: 11px; font-weight: 600;
-  color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  flex-shrink: 0;
+  padding: 5px 10px; font-size: 12px; cursor: pointer; user-select: none;
 }
-.pane-mobile-back {
-  display: none; /* shown on mobile only */
-  margin-left: auto; background: none; border: none;
-  color: rgba(255,255,255,0.5); font-size: 11px; cursor: pointer;
-  gap: 4px; align-items: center;
-}
-.pane-mobile-back:hover { color: rgba(255,255,255,0.8); }
-.pane-content {
-  flex: 1; margin: 0; padding: 10px 12px; overflow-y: auto;
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", var(--bs-font-monospace);
-  font-size: 12px; line-height: 1.45; color: #e0e0e0;
-  white-space: pre-wrap; word-break: break-all;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
-}
-
-/* ── Messages ── */
-.msg { padding: 12px 16px 8px; border-bottom: 1px solid var(--bs-border-color); }
-.msg:last-child { border-bottom: none; }
-.msg-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; }
-.msg-user .msg-label { color: var(--bs-secondary-color); }
-.msg-assistant .msg-label { color: var(--bs-primary); }
-.msg-body { font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.msg-md { position: relative; white-space: normal; }
-.copy-btn {
-  position: absolute; top: -2px; right: 0; background: none; border: none;
-  color: var(--bs-tertiary-color); font-size: 11px; padding: 2px 4px;
-  opacity: 0; transition: opacity 0.15s; cursor: pointer;
-}
-.msg-md:hover .copy-btn { opacity: 1; }
-.copy-btn:hover { color: var(--bs-emphasis-color); }
-
-/* ── Diff box (edit tools) ── */
-.diff-box {
-  margin: 4px 16px;
-  border: 1px solid var(--bs-border-color);
-  border-radius: 6px; overflow: hidden; background: var(--bs-tertiary-bg);
-}
-.diff-header {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px; font-size: 13px; cursor: pointer; user-select: none;
-}
-.diff-header:hover { background: var(--bs-secondary-bg); }
-.diff-icon { color: var(--bs-warning); font-size: 13px; }
-.diff-file { font-weight: 500; color: var(--bs-emphasis-color); }
-.diff-path {
-  font-family: var(--bs-font-monospace); font-size: 10px; color: var(--bs-tertiary-color);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
-}
-.diff-body {
+.diff-pill-header:hover { background: var(--bs-secondary-bg); }
+.diff-pill-header .bi { font-size: 11px; color: var(--bs-warning); }
+.diff-pill-file { font-weight: 500; color: var(--bs-emphasis-color); font-family: var(--bs-font-monospace); font-size: 11px; }
+.diff-pill-counts { display: flex; gap: 4px; font-size: 10px; font-weight: 600; font-family: var(--bs-font-monospace); }
+.diff-count-rm { color: var(--bs-danger); }
+.diff-count-add { color: var(--bs-success); }
+.diff-pill-body {
   border-top: 1px solid var(--bs-border-color);
-  font-family: var(--bs-font-monospace);
-  font-size: 12px; line-height: 1.5;
-  overflow: hidden;
+  font-family: var(--bs-font-monospace); font-size: 11px; line-height: 1.5;
+  max-height: 200px; overflow-y: auto;
 }
-.diff-collapsed { max-height: 120px; }
-.diff-expand {
-  display: block; width: 100%; padding: 3px; border: none;
-  border-top: 1px solid var(--bs-border-color);
-  background: var(--bs-secondary-bg); color: var(--bs-primary);
-  font-size: 11px; cursor: pointer; text-align: center;
-}
-.diff-expand:hover { background: var(--bs-tertiary-bg); }
-.diff-line {
-  display: flex; padding: 0 8px; white-space: pre-wrap; word-break: break-all;
-}
-.diff-gutter {
-  width: 16px; flex-shrink: 0; text-align: center; user-select: none; font-weight: 600;
-}
+.diff-line { display: flex; padding: 0 8px; white-space: pre-wrap; word-break: break-all; }
+.diff-gutter { width: 14px; flex-shrink: 0; text-align: center; user-select: none; font-weight: 600; }
 .diff-removed {
   background: color-mix(in srgb, var(--bs-danger) 12%, transparent);
   color: color-mix(in srgb, var(--bs-danger) 80%, var(--bs-body-color));
@@ -727,40 +586,7 @@ const mobileView = ref<'chat' | 'pane'>('chat');
 }
 .diff-added .diff-gutter { color: var(--bs-success); }
 
-/* ── Tool verbose ── */
-.tool-verbose {
-  margin: 4px 16px; border: 1px solid var(--bs-border-color);
-  border-radius: 5px; overflow: hidden; background: var(--bs-tertiary-bg);
-}
-.tool-verbose-header {
-  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
-  font-size: 13px; font-weight: 500; color: var(--bs-secondary-color);
-  border-bottom: 1px solid var(--bs-border-color);
-}
-.tool-verbose-header .bi { font-size: 12px; color: var(--bs-primary); }
-.tool-verbose-body {
-  padding: 8px 10px; font-size: 12px; line-height: 1.4; margin: 0;
-  white-space: pre-wrap; word-break: break-all; color: var(--bs-secondary-color);
-  max-height: 200px; overflow-y: auto;
-}
-
-/* ── Thinking ── */
-.tool-line {
-  display: flex; align-items: center; gap: 6px;
-  padding: 3px 16px; font-size: 13px; color: var(--bs-tertiary-color);
-}
-.tool-line .bi { font-size: 12px; }
-.tool-line-label { color: var(--bs-secondary-color); }
-.tool-line-detail {
-  font-size: 12px; opacity: 0.7; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; max-width: 200px; font-style: italic;
-}
-
 /* ── Busy ── */
-.busy-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 16px; font-size: 14px; color: var(--bs-tertiary-color);
-}
 .busy-spinner {
   width: 10px; height: 10px;
   border: 2px solid var(--bs-border-color); border-top-color: var(--bs-primary);
@@ -768,63 +594,48 @@ const mobileView = ref<'chat' | 'pane'>('chat');
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Error ── */
-.msg-error {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 16px; font-size: 14px; color: var(--bs-danger);
-}
-
 /* ── Input area ── */
-.code-input-area {
+.chat-input-area {
   border-top: 1px solid var(--bs-border-color);
   padding: 10px 12px 12px; background: var(--bs-tertiary-bg);
   width: 100%; flex-shrink: 0;
 }
-.input-bottom-bar {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 0 2px;
-}
+.input-bottom-bar { display: flex; align-items: center; gap: 6px; padding: 8px 0 2px; }
 .action-btn {
-  height: 32px; padding: 0 14px; border-radius: 6px;
-  border: none;
+  height: 32px; padding: 0 14px; border-radius: 6px; border: none;
   background: var(--bs-primary); color: #fff;
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px; font-weight: 500; cursor: pointer;
-  transition: filter 0.15s;
+  font-size: 14px; font-weight: 500; cursor: pointer; transition: filter 0.15s;
 }
 .action-btn:hover { filter: brightness(1.15); }
 
-.code-input-form {
+.chat-input-form {
   display: flex; align-items: flex-end; gap: 8px;
   background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
   border-radius: 8px; padding: 6px 6px 6px 12px; transition: border-color 0.15s;
 }
-.code-input-form:focus-within { border-color: var(--bs-primary); }
-.code-input {
+.chat-input-form:focus-within { border-color: var(--bs-primary); }
+.chat-input {
   flex: 1; border: none; background: transparent; color: var(--bs-body-color);
   font-size: 15px; line-height: 1.5; resize: none; overflow-y: hidden;
   outline: none; padding: 4px 0; font-family: inherit;
 }
-.code-input::placeholder { color: var(--bs-tertiary-color); }
-.code-send-btn {
+.chat-input::placeholder { color: var(--bs-tertiary-color); }
+.chat-send-btn {
   width: 26px; height: 26px; border-radius: 6px; border: none;
   background: var(--bs-primary); color: #fff;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; cursor: pointer; flex-shrink: 0;
 }
-.code-send-btn:disabled { opacity: 0.3; cursor: default; }
-.code-send-btn:not(:disabled):hover { filter: brightness(1.15); }
+.chat-send-btn:disabled { opacity: 0.3; cursor: default; }
+.chat-send-btn:not(:disabled):hover { filter: brightness(1.15); }
 
 /* ── Mode button ── */
 .mode-bar-btn {
   height: 32px; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
-  font-size: 14px; color: #fff;
-  padding: 0 14px; border-radius: 6px;
-  border: none;
-  background: var(--bs-primary);
-  font-weight: 500;
-  transition: filter 0.15s;
+  font-size: 14px; color: #fff; padding: 0 14px; border-radius: 6px;
+  border: none; background: var(--bs-primary); font-weight: 500; transition: filter 0.15s;
 }
 .mode-bar-btn:hover { filter: brightness(1.15); }
 .mode-bar-model { font-weight: 500; }
@@ -865,43 +676,21 @@ const mobileView = ref<'chat' | 'pane'>('chat');
 .popup-item-danger:hover { background: color-mix(in srgb, var(--bs-danger) 10%, transparent); }
 .popup-empty { padding: 16px; text-align: center; color: var(--bs-tertiary-color); font-size: 12px; }
 
-/* ── Markdown ── */
-.chat-md { line-height: 1.6; }
-.chat-md :deep(p) { margin: 0 0 8px; }
+/* ── Markdown in bubbles ── */
+.chat-md { line-height: 1.5; }
+.chat-md :deep(p) { margin: 0 0 6px; }
 .chat-md :deep(p:last-child) { margin-bottom: 0; }
 .chat-md :deep(pre) {
-  background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color);
-  border-radius: 5px; padding: 10px 12px; overflow-x: auto; font-size: 13px; margin: 8px 0;
+  background: rgba(0,0,0,0.15); border-radius: 5px;
+  padding: 8px 10px; overflow-x: auto; font-size: 12px; margin: 6px 0;
 }
 .chat-md :deep(code) {
-  color: var(--bs-code-color, var(--bs-primary)); background: var(--bs-tertiary-bg);
-  padding: 1px 4px; border-radius: 3px; font-size: 13px;
+  color: var(--bs-code-color, var(--bs-primary)); background: rgba(0,0,0,0.1);
+  padding: 1px 4px; border-radius: 3px; font-size: 12px;
 }
 .chat-md :deep(pre code) { background: none; padding: 0; color: inherit; }
-.chat-md :deep(ul), .chat-md :deep(ol) { padding-left: 18px; margin: 4px 0; }
+.chat-md :deep(ul), .chat-md :deep(ol) { padding-left: 16px; margin: 4px 0; }
 .chat-md :deep(li) { margin: 2px 0; }
-.chat-md :deep(h1), .chat-md :deep(h2), .chat-md :deep(h3) { font-size: 16px; font-weight: 600; margin: 12px 0 4px; }
-.chat-md :deep(blockquote) { border-left: 3px solid var(--bs-border-color); padding-left: 10px; color: var(--bs-secondary-color); margin: 8px 0; }
-
-/* ── Mobile tabs ── */
-.mobile-tabs { display: none; }
-.mobile-tab {
-  flex: 1; padding: 6px; border: none; border-radius: 6px;
-  background: var(--bs-secondary-bg); color: var(--bs-tertiary-color);
-  font-size: 12px; font-weight: 500; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; gap: 4px;
-}
-.mobile-tab.active { background: var(--bs-primary); color: #fff; }
-
-/* ── Responsive: small screens ── */
-@media (max-width: 768px) {
-  .chat-side { flex: none; width: 100%; height: 100%; }
-  .pane-side { flex: none; width: 100%; height: 100%; }
-  .mobile-hidden { display: none !important; }
-  .pane-toggle { display: none; }
-  .mobile-tabs {
-    display: flex; gap: 4px; margin-bottom: 8px;
-  }
-  .pane-mobile-back { display: flex; }
-}
+.chat-md :deep(h1), .chat-md :deep(h2), .chat-md :deep(h3) { font-size: 15px; font-weight: 600; margin: 8px 0 4px; }
+.chat-md :deep(blockquote) { border-left: 3px solid var(--bs-border-color); padding-left: 8px; color: var(--bs-secondary-color); margin: 6px 0; }
 </style>
