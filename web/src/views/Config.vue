@@ -18,6 +18,7 @@ const activeSkill = ref<string | null>(null);
 const skillContent = ref("");
 const newSkillName = ref("");
 const dragging = ref(false);
+const thinkingLevel = ref("");
 
 async function loadSkills() {
   try {
@@ -244,6 +245,14 @@ async function load() {
     const [cfg, files] = await Promise.all([fetchConfig(), fetchClaudeFiles()]);
     // remoteControl defaults to true in the runtime (enabled unless explicitly false)
     if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = true;
+    // Extract thinking budget from extraFlags
+    const flags: string[] = cfg.claude?.extraFlags || [];
+    const tbIdx = flags.indexOf("--thinking-budget");
+    if (tbIdx >= 0 && flags[tbIdx + 1]) {
+      thinkingLevel.value = flags[tbIdx + 1];
+    } else {
+      thinkingLevel.value = "";
+    }
     config.value = cfg;
     claudeFiles.value = files;
     jsonText.value = JSON.stringify(cfg, null, 2);
@@ -261,6 +270,16 @@ async function handleSave() {
   try {
     if (section.value === "json") applyJson();
     if (msg.value) { saving.value = false; return; }
+
+    // Sync thinking budget into extraFlags
+    if (!config.value.claude) config.value.claude = {};
+    const ef: string[] = (config.value.claude.extraFlags || []).filter(
+      (f: string, i: number, arr: string[]) => f !== "--thinking-budget" && arr[i - 1] !== "--thinking-budget"
+    );
+    if (thinkingLevel.value) {
+      ef.push("--thinking-budget", thinkingLevel.value);
+    }
+    config.value.claude.extraFlags = ef.length ? ef : undefined;
 
     await saveConfig(config.value);
 
@@ -331,15 +350,20 @@ onMounted(load);
     <!-- Save bar -->
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h6 class="mb-0">{{ section === 'overview' ? 'Configuration' : '' }}</h6>
-      <div class="d-flex gap-2">
-        <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
-          <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
-        </button>
-        <button class="btn btn-outline-warning btn-sm" :disabled="restarting" @click="restartSession">
-          <span v-if="restarting" class="spinner-border spinner-border-sm me-1"></span>
-          <i v-else class="bi bi-arrow-clockwise me-1"></i>
-          {{ restarting ? 'Restarting...' : 'Restart' }}
-        </button>
+      <div class="d-flex align-items-center gap-3">
+        <span v-if="config.claude?.permissionMode" class="text-body-secondary small">
+          <i class="bi bi-shield-check me-1"></i>{{ config.claude.permissionMode }}
+        </span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
+            <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
+          </button>
+          <button class="btn btn-outline-warning btn-sm" :disabled="restarting" @click="restartSession">
+            <span v-if="restarting" class="spinner-border spinner-border-sm me-1"></span>
+            <i v-else class="bi bi-arrow-clockwise me-1"></i>
+            {{ restarting ? 'Restarting...' : 'Restart' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -368,19 +392,35 @@ onMounted(load);
             <label class="form-label small text-body-secondary">Name</label>
             <input v-model="config.name" class="form-control form-control-sm font-monospace" />
           </div>
-          <div class="mb-3">
-            <label class="form-label small text-body-secondary">Model</label>
-            <input v-model="config.claude.model" class="form-control form-control-sm font-monospace" />
-          </div>
-          <div class="mb-3">
-            <label class="form-label small text-body-secondary">Permission Mode</label>
-            <select v-model="config.claude.permissionMode" class="form-select form-select-sm">
-              <option value="auto">auto</option>
-              <option value="bypassPermissions">bypassPermissions</option>
-              <option value="default">default</option>
-              <option value="plan">plan</option>
-              <option value="acceptEdits">acceptEdits</option>
-            </select>
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label small text-body-secondary">Model</label>
+              <select v-model="config.claude.model" class="form-select form-select-sm font-monospace">
+                <option value="claude-opus-4-6">claude-opus-4-6</option>
+                <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small text-body-secondary">Permission Mode</label>
+              <select v-model="config.claude.permissionMode" class="form-select form-select-sm">
+                <option value="auto">auto</option>
+                <option value="bypassPermissions">bypassPermissions</option>
+                <option value="default">default</option>
+                <option value="plan">plan</option>
+                <option value="acceptEdits">acceptEdits</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small text-body-secondary">Thinking Level</label>
+              <select v-model="thinkingLevel" class="form-select form-select-sm">
+                <option value="">Default</option>
+                <option value="1024">Low (1k tokens)</option>
+                <option value="4096">Medium (4k tokens)</option>
+                <option value="16384">High (16k tokens)</option>
+                <option value="32768">Max (32k tokens)</option>
+              </select>
+            </div>
           </div>
           <div class="mb-3">
             <div class="form-check form-switch">
