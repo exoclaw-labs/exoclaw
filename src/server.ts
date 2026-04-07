@@ -1001,6 +1001,8 @@ export function createApp(config: GatewayConfig) {
 
   const COMPANION_ORDER = ["CLAUDE.md", "IDENTITY.md", "SOUL.md", "USER.md", "MEMORY.md", "TOOLS.md", "HEARTBEAT.md"];
 
+  /** Stitch directory files into a flat <name>.md for Claude Code.
+   *  Section markers (<!-- FILENAME -->) allow lossless round-tripping. */
   function stitchAgent(name: string): void {
     const dir = join(agentsDir, name);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return;
@@ -1008,38 +1010,98 @@ export function createApp(config: GatewayConfig) {
     const metaPath = join(dir, "META.md");
     const metaContent = existsSync(metaPath) ? readFileSync(metaPath, "utf-8").trim() : `name: ${name}`;
 
-    const sections: string[] = [];
-    // Frontmatter from META.md
-    sections.push(`---\n${metaContent}\n---`);
+    const parts: string[] = [`---\n${metaContent}\n---`];
 
-    // Append companion files in defined order
     for (const file of COMPANION_ORDER) {
       const fp = join(dir, file);
       if (existsSync(fp)) {
-        sections.push(readFileSync(fp, "utf-8"));
+        const content = readFileSync(fp, "utf-8").trimEnd();
+        parts.push(`<!-- ${file} -->\n${content}`);
       }
     }
 
-    const generated = sections.join("\n\n");
-    writeFileSync(join(agentsDir, `${name}.md`), generated);
+    writeFileSync(join(agentsDir, `${name}.md`), parts.join("\n\n") + "\n");
+  }
+
+  /** Parse a flat <name>.md back into a directory of files.
+   *  Skips if the directory already exists (directory is source of truth). */
+  function unstitchAgent(name: string): void {
+    const mdFile = join(agentsDir, `${name}.md`);
+    const dir = join(agentsDir, name);
+    if (!existsSync(mdFile) || existsSync(dir)) return;
+
+    let raw: string;
+    try { raw = readFileSync(mdFile, "utf-8"); } catch { return; }
+
+    // Parse frontmatter
+    const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!fmMatch) return;
+
+    const [, meta, body] = fmMatch;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "META.md"), meta.trim() + "\n");
+
+    // Split body on section markers
+    const MARKER = /<!-- ([A-Z][A-Z0-9_.-]+) -->\n/g;
+    const segments: { file: string; content: string }[] = [];
+    let lastIndex = 0;
+    let claudeBody = "";
+    let match: RegExpExecArray | null;
+
+    while ((match = MARKER.exec(body)) !== null) {
+      if (segments.length === 0 && lastIndex === 0) {
+        // Everything before first marker is CLAUDE.md
+        claudeBody = body.slice(0, match.index).trim();
+      } else if (segments.length > 0) {
+        segments[segments.length - 1].content = body.slice(lastIndex, match.index).trim();
+      }
+      segments.push({ file: match[1], content: "" });
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Remaining content after last marker
+    if (segments.length > 0) {
+      segments[segments.length - 1].content = body.slice(lastIndex).trim();
+    } else {
+      // No markers — entire body is CLAUDE.md (legacy flat format)
+      claudeBody = body.trim();
+    }
+
+    writeFileSync(join(dir, "CLAUDE.md"), (claudeBody || "") + "\n");
+    for (const { file, content } of segments) {
+      if (content) writeFileSync(join(dir, file), content + "\n");
+    }
+
+    log("info", `Migrated flat agent '${name}' to directory format`);
   }
 
   app.get("/api/sub-agents", (c) => {
     try {
       mkdirSync(agentsDir, { recursive: true });
       const entries = readdirSync(agentsDir, { withFileTypes: true });
-      const agents = entries
-        .filter(e => e.isDirectory())
-        .map(e => {
-          const dir = join(agentsDir, e.name);
-          const files: Record<string, string> = {};
-          for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
-            files[f] = readFileSync(join(dir, f), "utf-8");
+
+      // Auto-migrate any flat .md files that don't have a matching directory
+      for (const e of entries) {
+        if (e.isFile() && e.name.endsWith(".md")) {
+          const agentName = e.name.slice(0, -3);
+          if (!entries.some(d => d.isDirectory() && d.name === agentName)) {
+            unstitchAgent(agentName);
           }
-          return { name: e.name, files };
-        });
+        }
+      }
+
+      // Re-read after potential migrations
+      const dirs = readdirSync(agentsDir, { withFileTypes: true }).filter(e => e.isDirectory());
+      const agents = dirs.map(e => {
+        const dir = join(agentsDir, e.name);
+        const files: Record<string, string> = {};
+        for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+          try { files[f] = readFileSync(join(dir, f), "utf-8"); } catch {}
+        }
+        return { name: e.name, files };
+      });
       return c.json({ agents });
-    } catch (err) {
+    } catch {
       return c.json({ agents: [] });
     }
   });
