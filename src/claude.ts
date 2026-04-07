@@ -357,11 +357,9 @@ export class Claude {
       args.push("--name", this.config.name);
     }
 
-    if (this.config.remoteControl !== false) {
-      args.push("--remote-control");
-      if (this.config.name) {
-        args.push("--remote-control-session-name-prefix", this.config.name);
-      }
+    // Session name prefix for remote control (shows up in claude.ai automatically)
+    if (this.config.name) {
+      args.push("--remote-control-session-name-prefix", this.config.name);
     }
 
     // Load the channel plugin so Claude sees channel events from the gateway
