@@ -71,7 +71,7 @@ export class Claude {
       }
     }
     settings.skipDangerousModePermissionPrompt = true;
-    settings.enableRemoteControlForAllSessions = true;
+    settings.remoteControlAtStartup = true;
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   }
 
