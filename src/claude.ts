@@ -790,12 +790,18 @@ export class Claude {
         if (responseEnd === -1) continue;
 
         // Extract and filter
-        const responseLines = allLines.slice(0, responseEnd)
+        const rawLines = allLines.slice(0, responseEnd);
+        const nonEmpty = rawLines.filter(l => l.trim());
+        const responseLines = rawLines
           .filter(l => !isTuiNoise(l))
           .map(l => l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  "));
 
         const result = responseLines.join("\n").trim();
-        log("debug", `sendAndWait: prompt="${promptSlice}" response="${result.slice(0, 120)}" (${responseLines.length} lines)`);
+        if (!result && nonEmpty.length > 0) {
+          log("warn", `sendAndWait: all ${nonEmpty.length} non-empty lines filtered as noise:`);
+          nonEmpty.slice(0, 5).forEach(l => log("warn", `  filtered: ${JSON.stringify(l)}`));
+        }
+        log("debug", `sendAndWait: prompt="${promptSlice}" response="${result.slice(0, 120)}" (${responseLines.length} lines, ${rawLines.length} raw, responseEnd=${responseEnd})`);
         return result;
       }
 
