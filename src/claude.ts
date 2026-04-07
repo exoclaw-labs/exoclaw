@@ -742,16 +742,31 @@ export class Claude {
 
         // Extract response: everything between the prompt echo line and the idle prompt
         const responseLines = lines.slice(1, responseEnd)
-          .filter(l =>
-            l.trim() &&
-            !/^[─━\u2500\u2501]{3,}/.test(l) &&
-            !/^\s*⏵⏵/.test(l) &&
-            !/bypass permissions/i.test(l) &&
-            !/[◐◑◒◓]/.test(l)
-          )
+          .filter(l => {
+            const t = l.trim();
+            if (!t) return false;
+            // TUI chrome
+            if (/^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(t)) return false;
+            if (/^[╭╰│╮╯┌└┐┘├┤┬┴┼]/.test(t)) return false;
+            if (/^\s*⏵⏵/.test(l)) return false;
+            if (/bypass permissions/i.test(t)) return false;
+            if (/[◐◑◒◓]/.test(t)) return false;
+            if (/shift\+tab to cycle/i.test(t)) return false;
+            if (/ctrl\+o to expand/i.test(t)) return false;
+            if (/\? for shortcu/.test(t)) return false;
+            // Spinner tips: "● Flowing...", "● Thinking deeply..." — decorative single-line hints
+            // Keep lines like "● 10" or "● Here is the answer" (actual responses)
+            if (/^[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w/.test(t)) return false;  // non-● spinner chars are always noise
+            if (/^●\s+[A-Z][a-z]+(?:\s[a-z]+)*\.{0,3}$/.test(t) && t.length < 30) return false; // "● Flowing..."
+            // Status lines
+            if (/^Session:|^Model:|^Context:|^Cost:/.test(t)) return false;
+            return true;
+          })
           .map(l => l.replace(/^●\s*/, "").replace(/^\s{2}⎿\s*/, "  "));
 
-        return responseLines.join("\n").trim();
+        const result = responseLines.join("\n").trim();
+        log("debug", `sendAndWait: response="${result.slice(0, 100)}..." (${responseLines.length} lines)`);
+        return result;
       }
 
       return "[Response timeout]";
