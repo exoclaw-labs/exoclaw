@@ -221,16 +221,24 @@ export class Claude {
         if (!pane) return;
 
         // Already at idle prompt
-        if (IDLE_PATTERN.test(pane)) {
+        const isIdle = IDLE_PATTERN.test(pane);
+        if (!ready && !isIdle) log("debug", `tick: not idle, pane ends with: ${JSON.stringify(pane.slice(-60))}`);
+        if (isIdle) {
           if (!ready) {
             ready = true;
             log("info", "Claude interactive session ready");
           }
           // Enable remote control once after session is ready
-          if (!this._remoteControlEnabled && !pane.includes("/remote-control is active")) {
-            this._remoteControlEnabled = true;
-            log("info", "Enabling remote control via /remote-control");
-            execSync(`tmux send-keys -t ${TMUX_SESSION} "/remote-control" Enter`);
+          log("debug", `RC check: enabled=${this._remoteControlEnabled}, hasActive=${pane.includes("/remote-control is active")}`);
+          if (!this._remoteControlEnabled) {
+            if (pane.includes("/remote-control is active")) {
+              this._remoteControlEnabled = true;
+              log("info", "Remote control already active");
+            } else {
+              this._remoteControlEnabled = true;
+              log("info", "Enabling remote control via /remote-control");
+              execSync(`tmux send-keys -t ${TMUX_SESSION} "/remote-control" Enter`);
+            }
           }
           // Capture remote control URL if visible
           if (!this._remoteControlUrl) {
@@ -667,6 +675,7 @@ export class Claude {
         !l.match(/Remote Control/) &&
         !l.match(/^\s*[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w+…/) &&
         !l.match(/^\s*[·•✻✶✷✸✹✺✽⊹⋆∗⁕※☆★]\s+\w+\.\.\.$/) &&
+        !l.match(/[▐▛▜▌▝▘█]/) &&
         !l.match(/\(thinking\)\s*$/) &&
         !l.match(/^\s*⏵⏵/) &&
         !l.match(/bypass permissions/) &&
@@ -674,10 +683,22 @@ export class Claude {
         !l.match(/^\s*❯\s*$/) &&
         !l.match(/\/remote-control is active/) &&
         !l.match(/Please upgrade to the latest/) &&
-        !l.match(/Claude Code has switched/) &&
+        !l.match(/Claude Code has switched.*native installer/) &&
+        !l.match(/Run `claude install`/) &&
+        !l.match(/tmux detected.*PgUp\/PgDn/) &&
+        !l.match(/set -g mouse on.*\.tmux\.conf/) &&
         !l.match(/shift\+tab to cycle/) &&
         !l.match(/^\s*\/\w+\s*$/) &&
-        !l.match(/ctrl\+o to expand/)
+        !l.match(/ctrl\+o to expand/) &&
+        // Startup banner
+        !l.match(/Claude Code\s+v/i) &&
+        !l.match(/Claude Max|Claude Pro|Claude Team|Claude Enterprise/i) &&
+        !l.match(/^\s*~\//) &&
+        !l.match(/^\s*Tips?:/) &&
+        !l.match(/press Enter to send/i) &&
+        !l.match(/Sonnet \d|Opus \d|Haiku \d/i) &&
+        !l.match(/^Resume Session/i) &&
+        !l.match(/^Type to search/i)
       )
       .map(l => l.replace(/^●\s*/, ""))
       .join("\n")

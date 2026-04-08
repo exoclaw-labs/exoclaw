@@ -259,6 +259,12 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: "ok" });
   });
 
+  app.delete("/api/sessions", (c) => {
+    audit.log({ event_type: "session", detail: "Session history cleared via API", source: "api" });
+    sessionDb.clearSessions();
+    return c.json({ status: "ok" });
+  });
+
   app.post("/api/session/switch", async (c) => {
     const { sessionId } = await c.req.json() as { sessionId: string };
     if (!sessionId || !/^[a-f0-9-]{36}$/.test(sessionId)) {
@@ -660,6 +666,15 @@ export function createApp(config: GatewayConfig) {
       source: "cron",
       severity: run.status === "error" ? "error" : "info",
     });
+
+    // Suppress silent heartbeats and empty dreaming runs from broadcast
+    if (job.name === "heartbeat" && run.result && !isHeartbeatAlert(run.result)) {
+      return; // Silent heartbeat — don't broadcast
+    }
+    if (job.name === "dreaming" && run.result?.includes("Nothing to consolidate")) {
+      return; // Nothing consolidated — don't broadcast
+    }
+
     // Broadcast to SSE clients (dashboard, web UI)
     broadcastSSE("cron_complete", { job_id: job.id, name: job.name, status: run.status, result: run.result?.slice(0, 500) });
 
@@ -927,16 +942,6 @@ export function createApp(config: GatewayConfig) {
     }
     return command; // Pass through all other commands unchanged
   };
-
-  // Filter heartbeat results — suppress HEARTBEAT_OK from broadcast
-  scheduler.onJobComplete((job, run) => {
-    if (job.name === "heartbeat" && run.result && !isHeartbeatAlert(run.result)) {
-      return; // Silent heartbeat — don't broadcast
-    }
-    if (job.name === "dreaming" && run.result?.includes("Nothing to consolidate")) {
-      return; // Nothing consolidated — don't broadcast
-    }
-  });
 
   // Prune old daily notes on startup
   pruneDailyNotes(config.audit?.retentionDays || 90);

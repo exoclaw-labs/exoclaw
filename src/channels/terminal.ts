@@ -1,8 +1,12 @@
 /**
- * Terminal WebSocket — spawns a shell PTY and pipes I/O over WebSocket.
+ * Terminal WebSocket — persistent shell via a dedicated tmux session.
  *
  * Connect: ws://<host>/ws/terminal
  * Auth:    Same as /ws/chat (Bearer header, subprotocol, or query param)
+ *
+ * The shell runs in a tmux session ("exoclaw-term") that persists across
+ * WebSocket disconnects. Navigating away and reconnecting reattaches to
+ * the same session with full scrollback and state preserved.
  *
  * Protocol:
  *   Client -> Server: raw text (stdin)
@@ -12,7 +16,45 @@
 
 import { type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execSync, type ChildProcess } from "child_process";
+
+const TERM_SESSION = "exoclaw-term";
+
+/** Ensure the persistent tmux session exists. */
+function ensureSession(): void {
+  try {
+    execSync(`tmux has-session -t ${TERM_SESSION} 2>/dev/null`);
+  } catch {
+    // Create a new detached session
+    const shell = process.env.SHELL || "/bin/bash";
+    const cwd = process.env.HOME || "/home/agent";
+    execSync(`tmux new-session -d -s ${TERM_SESSION} -x 120 -y 30 ${shell}`, {
+      env: { ...process.env, TERM: "xterm-256color" },
+      cwd,
+    });
+    log("Created persistent terminal session");
+  }
+}
+
+/** Attach to the tmux session via `tmux attach` in a PTY-like pipe. */
+function attachToSession(cols: number, rows: number): ChildProcess {
+  // Resize the tmux pane to match the client terminal
+  try {
+    execSync(`tmux resize-window -t ${TERM_SESSION} -x ${cols} -y ${rows} 2>/dev/null`);
+  } catch { /* may fail if session was just created */ }
+
+  // Use script (Linux) or just run tmux attach directly
+  const isLinux = process.platform === "linux";
+  if (isLinux) {
+    return spawn("script", ["-qfc", `tmux attach-session -t ${TERM_SESSION}`, "/dev/null"], {
+      env: { ...process.env, TERM: "xterm-256color", COLUMNS: String(cols), LINES: String(rows) },
+    });
+  } else {
+    return spawn("tmux", ["attach-session", "-t", TERM_SESSION], {
+      env: { ...process.env, TERM: "xterm-256color" },
+    });
+  }
+}
 
 export function setupTerminal(server: Server, apiToken?: string): void {
   const wss = new WebSocketServer({ noServer: true });
@@ -47,28 +89,11 @@ export function setupTerminal(server: Server, apiToken?: string): void {
   wss.on("connection", (ws: WebSocket) => {
     log("Terminal connected");
 
-    const isLinux = process.platform === "linux";
-    let proc: ChildProcess;
+    // Ensure the persistent session exists
+    ensureSession();
 
-    if (isLinux) {
-      proc = spawn("script", ["-qfc", "/bin/bash", "/dev/null"], {
-        env: {
-          ...process.env,
-          TERM: "xterm-256color",
-          COLUMNS: "120",
-          LINES: "30",
-        },
-        cwd: process.env.HOME || "/home/agent",
-      });
-    } else {
-      proc = spawn(process.env.SHELL || "/bin/bash", ["-i"], {
-        env: {
-          ...process.env,
-          TERM: "xterm-256color",
-        },
-        cwd: process.env.HOME || "/home/agent",
-      });
-    }
+    // Attach to the tmux session
+    let proc = attachToSession(120, 30);
 
     proc.stdout?.on("data", (data: Buffer) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(data);
@@ -78,8 +103,8 @@ export function setupTerminal(server: Server, apiToken?: string): void {
       if (ws.readyState === WebSocket.OPEN) ws.send(data);
     });
 
-    proc.on("exit", (code) => {
-      log(`Shell exited: ${code}`);
+    proc.on("exit", () => {
+      log("Attach process exited");
       if (ws.readyState === WebSocket.OPEN) ws.close();
     });
 
@@ -87,7 +112,12 @@ export function setupTerminal(server: Server, apiToken?: string): void {
       const msg = data.toString();
       try {
         const parsed = JSON.parse(msg);
-        if (parsed.type === "resize" && parsed.cols && parsed.rows) return;
+        if (parsed.type === "resize" && parsed.cols && parsed.rows) {
+          try {
+            execSync(`tmux resize-window -t ${TERM_SESSION} -x ${parsed.cols} -y ${parsed.rows} 2>/dev/null`);
+          } catch { /* intentional */ }
+          return;
+        }
       } catch {
         // Not JSON — raw stdin
       }
@@ -95,7 +125,8 @@ export function setupTerminal(server: Server, apiToken?: string): void {
     });
 
     ws.on("close", () => {
-      log("Terminal disconnected");
+      log("Terminal disconnected — session preserved");
+      // Kill only the attach process, NOT the tmux session
       proc.kill();
     });
   });

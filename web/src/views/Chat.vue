@@ -8,6 +8,7 @@ const input = ref("");
 const busy = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+const historyBtnEl = ref<HTMLElement | null>(null);
 let timer: ReturnType<typeof setInterval>;
 
 // ── Pane polling ──
@@ -37,6 +38,25 @@ async function sendKeys(keys: string) {
 
 // ── Model selector ──
 const showModes = ref(false);
+const showHistory = ref(false);
+const historyPopupStyle = ref<Record<string, string>>({});
+
+function toggleHistory() {
+  showHistory.value = !showHistory.value;
+  if (showHistory.value) {
+    loadSessions();
+    nextTick(() => {
+      if (historyBtnEl.value) {
+        const rect = historyBtnEl.value.getBoundingClientRect();
+        historyPopupStyle.value = {
+          top: `${rect.bottom + 4}px`,
+          right: `${window.innerWidth - rect.right}px`,
+        };
+      }
+    });
+  }
+}
+
 const config = ref<Record<string, any>>({});
 const savingConfig = ref(false);
 
@@ -136,6 +156,12 @@ async function switchSession(uuid: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ sessionId: uuid }),
   }); } catch {}
+}
+
+async function clearHistory() {
+  closeAllPopups();
+  try { await fetch("/api/sessions", { method: "DELETE" }); } catch {}
+  sessions.value = [];
 }
 
 // ── Slash commands ──
@@ -239,8 +265,11 @@ function renderMd(text: string): string {
   return marked.parse(text, { async: false }) as string;
 }
 
-function closeAllPopups() { showSlash.value = false; showModes.value = false; slashFilter.value = ""; }
-function onDocClick(e: MouseEvent) { if (!(e.target as HTMLElement).closest(".popup-anchor")) closeAllPopups(); }
+function closeAllPopups() { showSlash.value = false; showModes.value = false; showHistory.value = false; slashFilter.value = ""; }
+function onDocClick(e: MouseEvent) {
+  const el = e.target as HTMLElement;
+  if (!el.closest(".popup-anchor") && !el.closest(".history-popup")) closeAllPopups();
+}
 function onWindowKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") { closeAllPopups(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -276,7 +305,7 @@ const chatBlocks = computed((): ChatBlock[] => {
   const blocks: ChatBlock[] = [];
   let i = 0;
 
-  // TUI noise: dividers, status bars, prompts, UI chrome
+  // TUI noise: dividers, status bars, prompts, UI chrome, startup banner
   const isNoise = (l: string) =>
     /^[─━╌╍┄┅┈┉\u2500\u2501]{3,}/.test(l) ||
     /^[╭╰│╮╯┌└┐┘├┤┬┴┼]/.test(l) ||
@@ -288,14 +317,32 @@ const chatBlocks = computed((): ChatBlock[] => {
     /ctrl\+o to expand/.test(l) ||
     /\? for shortcu/.test(l) ||
     /Please upgrade/.test(l) ||
-    /Claude Code has switched/.test(l) ||
+    /Claude Code has switched.*native installer/.test(l) ||
+    /Run `claude install`/.test(l) ||
+    /tmux detected.*PgUp\/PgDn/.test(l) ||
+    /set -g mouse on.*\.tmux\.conf/.test(l) ||
     /^\s*⏵⏵/.test(l) ||
+    /[▐▛▜▌▝▘█]/.test(l) ||
     /[◐◑◒◓]\s*(low|medium|high|max)\s*·\s*\/effort/.test(l) ||
     /^\s*\d+\.\d+\.\d+\s/.test(l) || // version banners
     /^Session:/.test(l) ||
     /^Model:/.test(l) ||
     /^Context:/.test(l) ||
-    /^Cost:/.test(l);
+    /^Cost:/.test(l) ||
+    // Startup banner lines
+    /Claude Code\s+v/i.test(l) ||
+    /Claude Max/i.test(l) ||
+    /Claude Pro/i.test(l) ||
+    /Claude Team/i.test(l) ||
+    /Claude Enterprise/i.test(l) ||
+    /^\s*~\//.test(l) ||             // working directory line (~/workspace)
+    /^\s*Tips:/.test(l) ||
+    /^\s*Tip:/.test(l) ||
+    /press Enter to send/i.test(l) ||
+    /Sonnet \d|Opus \d|Haiku \d/i.test(l) ||
+    /^Resume Session/i.test(l) ||
+    /^Type to search/i.test(l) ||
+    /^\s*\/\w+\s*$/.test(l);
 
   const isToolLine = (l: string) =>
     /^\s{2}(Edited|Ran|Read|Wrote|Listed|Searched|Created|Deleted|Fetched|Glob|Grep)\s/.test(l);
@@ -303,9 +350,11 @@ const chatBlocks = computed((): ChatBlock[] => {
   while (i < lines.length) {
     const line = lines[i];
 
-    // User prompt: ❯ text
+    // User prompt: ❯ text (skip bare slash commands like /remote-control)
     if (/^❯\s+\S/.test(line)) {
-      blocks.push({ type: "user", content: line.replace(/^❯\s+/, "") });
+      const cmd = line.replace(/^❯\s+/, "");
+      if (/^\/[\w-]+\s*$/.test(cmd)) { i++; continue; }
+      blocks.push({ type: "user", content: cmd });
       i++;
       continue;
     }
@@ -398,12 +447,35 @@ onUnmounted(() => {
   <div class="chat-panel d-flex flex-column h-100">
     <!-- Header -->
     <div class="chat-header">
+      <div></div>
       <div class="d-flex align-items-center gap-2">
-        <i class="bi bi-chat-dots text-primary" style="font-size:14px"></i>
-        <span class="fw-semibold" style="font-size:12px">Chat</span>
-      </div>
-      <div class="d-flex align-items-center gap-2">
-        <span class="status-text" style="font-size:10px;opacity:0.5">tmux</span>
+        <button ref="historyBtnEl" class="btn btn-primary btn-sm header-action-btn" @click.stop="toggleHistory" title="History">
+          <i class="bi bi-clock-history"></i>
+        </button>
+        <Teleport to="body">
+          <div v-if="showHistory" class="history-popup" :style="historyPopupStyle" @click.stop>
+            <div class="popup-section-label">Sessions</div>
+            <div class="popup-scroll" style="max-height:260px">
+              <button v-for="s in sessions" :key="s.uuid" class="popup-item"
+                :class="{ active: s.uuid === activeSessionId }"
+                @click="switchSession(s.uuid); showHistory = false">
+                <i class="bi bi-chat-left-text"></i>
+                <span class="session-title">{{ s.title || s.uuid?.slice(0, 8) }}</span>
+                <span class="popup-item-desc">{{ s.message_count }}msg</span>
+                <i v-if="s.uuid === activeSessionId" class="bi bi-check2 ms-auto"></i>
+              </button>
+              <div v-if="!sessions.length" class="popup-empty">No sessions</div>
+            </div>
+            <div v-if="sessions.length" class="popup-divider"></div>
+            <button v-if="sessions.length" class="popup-item popup-item-danger" @click="clearHistory">
+              <i class="bi bi-trash3"></i>
+              <span>Clear history</span>
+            </button>
+          </div>
+        </Teleport>
+        <button class="btn btn-primary btn-sm header-action-btn" @click="freshSession" title="New chat">
+          <i class="bi bi-chat-dots"></i>
+        </button>
       </div>
     </div>
 
@@ -499,7 +571,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="popup-anchor">
-          <button class="mode-bar-btn" @click.stop="showModes = !showModes; showSlash = false; if (showModes) loadSessions()">
+          <button class="mode-bar-btn" @click.stop="showModes = !showModes; showSlash = false">
             <span class="mode-bar-model">{{ currentModel }}</span>
             <i class="bi bi-chevron-up" style="font-size:9px"></i>
           </button>
@@ -518,19 +590,6 @@ onUnmounted(() => {
               <i v-if="thinkingLevel === t.value" class="bi bi-check2 ms-auto"></i>
             </button>
             <div class="popup-divider"></div>
-            <div class="popup-section-label">Sessions</div>
-            <div class="popup-scroll" style="max-height:140px">
-              <button v-for="s in sessions" :key="s.uuid" class="popup-item"
-                :class="{ active: s.uuid === activeSessionId }"
-                @click="switchSession(s.uuid)">
-                <i class="bi bi-chat-left-text"></i>
-                <span class="session-title">{{ s.title || s.uuid?.slice(0, 8) }}</span>
-                <span class="popup-item-desc">{{ s.message_count }}msg</span>
-                <i v-if="s.uuid === activeSessionId" class="bi bi-check2 ms-auto"></i>
-              </button>
-              <div v-if="!sessions.length" class="popup-empty">No sessions</div>
-            </div>
-            <div class="popup-divider"></div>
             <div class="popup-section-label">Controls</div>
             <button class="popup-item" @click="toggleRemoteControl">
               <i class="bi bi-broadcast"></i>
@@ -540,10 +599,6 @@ onUnmounted(() => {
             <button class="popup-item" @click="restartSession">
               <i class="bi bi-arrow-clockwise"></i>
               <span>Restart session</span>
-            </button>
-            <button class="popup-item popup-item-danger" @click="freshSession">
-              <i class="bi bi-plus-circle"></i>
-              <span>New session</span>
             </button>
             <div v-if="savingConfig" class="popup-footer">Saving...</div>
             <div v-if="restartNeeded" class="popup-footer popup-footer-warn">Restart needed</div>
@@ -565,9 +620,17 @@ onUnmounted(() => {
 .chat-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg);
-  flex-shrink: 0;
+  flex-shrink: 0; position: relative; z-index: 1050; overflow: visible;
 }
 .status-text { font-size: 11px; color: var(--bs-tertiary-color); }
+.header-action-btn {
+  font-size: 14px; padding: 4px 10px; line-height: 1;
+}
+.history-popup {
+  position: fixed; min-width: 240px; z-index: 1050;
+  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
+  border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); overflow: hidden;
+}
 
 /* ── Messages area ── */
 .chat-messages { padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }

@@ -158,6 +158,13 @@ export class SessionDB {
     `).all(limit, offset) as SessionRow[];
   }
 
+  /** Delete all sessions and messages. */
+  clearSessions(): void {
+    this.db.exec(`DELETE FROM messages_fts`);
+    this.db.exec(`DELETE FROM messages`);
+    this.db.exec(`DELETE FROM sessions`);
+  }
+
   /** Full-text search across all messages. Returns grouped results with snippets. */
   search(query: string, limit = 20): SearchResult[] {
     return this.db.prepare(`
