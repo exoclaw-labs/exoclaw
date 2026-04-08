@@ -10,7 +10,7 @@
  * Claude Code first: the actual session is a tmux process we can kill.
  */
 
-import type { Claude } from "./claude.js";
+import type { Claude } from "./claude-sdk.js";
 import type { CronScheduler } from "./cron.js";
 import type { AuditLogger } from "./audit.js";
 

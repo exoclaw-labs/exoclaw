@@ -4,7 +4,7 @@
  * Env: DISCORD_BOT_TOKEN
  */
 
-import type { Claude } from "../claude.js";
+import type { Claude } from "../claude-sdk.js";
 
 let BOT_TOKEN = "";
 const API = "https://discord.com/api/v10";
@@ -75,13 +75,20 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
 
   const ch = msg.channel_id;
   try {
-    await fetch(`${API}/channels/${ch}/typing`, { method: "POST", headers: { authorization: `Bot ${BOT_TOKEN}` } });
+    // Send typing indicator and refresh every 8s (Discord typing lasts 10s)
+    const sendTyping = () => fetch(`${API}/channels/${ch}/typing`, { method: "POST", headers: { authorization: `Bot ${BOT_TOKEN}` } }).catch(() => {});
+    await sendTyping();
+    const typingInterval = setInterval(sendTyping, 8000);
 
     const chunks: string[] = [];
     let doneText = "";
-    for await (const ev of claude.send(prompt)) {
-      if (ev.type === "chunk") chunks.push(ev.content);
-      if (ev.type === "done") doneText = ev.content;
+    try {
+      for await (const ev of claude.send(prompt)) {
+        if (ev.type === "chunk") chunks.push(ev.content);
+        if (ev.type === "done") doneText = ev.content;
+      }
+    } finally {
+      clearInterval(typingInterval);
     }
     let response = doneText || chunks.join("");
 

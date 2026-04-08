@@ -11,7 +11,7 @@ const stepIndex = { welcome: 0, login: 1, browser: 2, integrations: 3, persona: 
 const steps = ["Welcome", "Login", "Browser", "Integrations", "Persona", "Complete"];
 
 // Browser tool selection
-const browserTool = ref<"gologin" | "browser-use" | "agent-browser" | "none">("gologin");
+const browserTool = ref<"browser-use" | "agent-browser" | "none">("browser-use");
 const browserApiKey = ref("");
 
 // Composio integration
@@ -50,7 +50,7 @@ async function launch() {
   saving.value = true;
   error.value = "";
   try {
-    const key = (browserTool.value === "gologin" || browserTool.value === "browser-use")
+    const key = browserTool.value === "browser-use"
       ? browserApiKey.value.trim()
       : undefined;
     await completeSetup(
@@ -67,21 +67,11 @@ async function launch() {
 
 const browserOptions = [
   {
-    id: "gologin" as const,
-    name: "GoLogin",
-    icon: "bi-globe2",
-    desc: "Cloud browser profiles with anti-detection. Managed remotely — no local Chrome needed.",
-    badge: "Recommended",
-    needsKey: true,
-    keyPlaceholder: "GoLogin API token",
-    keyHint: "Get your token from app.gologin.com > API settings",
-  },
-  {
     id: "browser-use" as const,
     name: "Browser Use",
     icon: "bi-cloud",
     desc: "AI-powered cloud browser automation. Runs remotely via the Browser Use API.",
-    badge: null,
+    badge: "Recommended",
     needsKey: true,
     keyPlaceholder: "Browser Use API key",
     keyHint: "Get your key from cloud.browser-use.com",

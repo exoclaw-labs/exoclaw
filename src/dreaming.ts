@@ -1,22 +1,30 @@
 /**
  * Dreaming — background consolidation of daily notes into long-term memory.
  *
- * Periodically reviews recent daily notes, scores entries by signal quality,
- * and promotes high-value items to MEMORY.md. Runs as a cron job (default: daily at 3am).
+ * Two phases run nightly (default: 3am):
+ *   1. Consolidation: promote high-value daily note entries to MEMORY.md
+ *   2. Decay: review MEMORY.md for stale/low-importance entries and prune them
+ *
+ * Entries marked with `[core]` are exempt from decay (permanent facts).
+ * All other entries are evaluated for continued relevance.
  *
  * Inspired by OpenClaw's experimental dreaming system.
+ * Memory decay inspired by ZeroClaw's memory hygiene system.
  *
- * Uses claude -p to evaluate and consolidate, so the agent has full
- * context about what's worth keeping long-term.
+ * Uses claude -p so the agent has full context about what's worth keeping.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 import { listDailyNotes } from "./daily-notes.js";
 import type { CronScheduler } from "./cron.js";
 
-const DREAMING_PROMPT = `You are consolidating recent daily notes into long-term memory.
+const WS = join(process.env.HOME || "/home/agent", "workspace");
+const MEMORY_PATH = join(WS, "MEMORY.md");
 
-## Instructions
+const DREAMING_PROMPT = `You are consolidating recent daily notes into long-term memory AND pruning stale entries.
+
+## Phase 1: Promote new facts
 
 1. Read the daily notes below (from the past week)
 2. Identify information worth keeping long-term:
@@ -28,13 +36,31 @@ const DREAMING_PROMPT = `You are consolidating recent daily notes into long-term
 4. Append any new long-term facts to ~/workspace/MEMORY.md
 5. Keep entries concise (one fact per line)
 
+## Phase 2: Prune stale entries
+
+After consolidation, review ALL existing entries in ~/workspace/MEMORY.md:
+
+1. Entries marked with \`[core]\` are **permanent** — never remove them
+2. For all other entries, evaluate:
+   - Is this still true/relevant? (projects end, tools change, preferences evolve)
+   - Is this contradicted by a newer entry? If so, remove the older one
+   - Is this a fact about in-progress work that has since completed?
+   - Has this been superseded by a more specific or accurate entry?
+3. Remove entries that are clearly stale or contradicted
+4. If you remove entries, add a brief comment at the top: \`<!-- Dreaming: pruned N stale entries on YYYY-MM-DD -->\`
+
 ## What NOT to promote
 - One-off tasks or temporary context
 - In-progress work that may change
 - Obvious facts derivable from the codebase
 - Anything already in MEMORY.md
 
-If nothing is worth promoting, just say "Nothing to consolidate." and stop.
+## Scoring guide
+High importance (keep): user identity, recurring preferences, established conventions, stable environment facts
+Medium importance (keep if recent): project-specific decisions, tool configurations, team conventions
+Low importance (prune if >14 days old): one-off task context, temporary workarounds, debug findings
+
+If nothing is worth promoting or pruning, just say "Nothing to consolidate." and stop.
 
 ## Recent Daily Notes
 
@@ -55,7 +81,21 @@ function buildDreamingPrompt(): string | null {
     .join("\n\n---\n\n");
 
   if (!notesContent) return null;
-  return DREAMING_PROMPT + notesContent;
+
+  let prompt = DREAMING_PROMPT + notesContent;
+
+  // Append current MEMORY.md contents so Claude can review for staleness
+  try {
+    if (existsSync(MEMORY_PATH)) {
+      const memory = readFileSync(MEMORY_PATH, "utf-8").trim();
+      if (memory) {
+        const lineCount = memory.split("\n").filter(l => l.trim()).length;
+        prompt += `\n\n---\n\n## Current MEMORY.md (${lineCount} entries — review for stale/contradicted entries)\n\n${memory}`;
+      }
+    }
+  } catch { /* intentional */ }
+
+  return prompt;
 }
 
 /** Seed the default dreaming cron job if none exists. */

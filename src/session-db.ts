@@ -165,6 +165,22 @@ export class SessionDB {
     this.db.exec(`DELETE FROM sessions`);
   }
 
+  /** Delete a single session and its messages by DB id. */
+  deleteSession(sessionId: number): boolean {
+    // Messages cascade via ON DELETE CASCADE, but FTS triggers handle FTS cleanup
+    const deleted = this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId).changes;
+    if (deleted > 0) {
+      // Clean up indexed_files for the deleted session
+      this.db.prepare("DELETE FROM indexed_files WHERE file_path NOT IN (SELECT file_path FROM sessions)").run();
+    }
+    return deleted > 0;
+  }
+
+  /** Rename a session (update its title). */
+  renameSession(sessionId: number, title: string): boolean {
+    return this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, sessionId).changes > 0;
+  }
+
   /** Full-text search across all messages. Returns grouped results with snippets. */
   search(query: string, limit = 20): SearchResult[] {
     return this.db.prepare(`

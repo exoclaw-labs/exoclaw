@@ -244,14 +244,9 @@ async function load() {
     const [cfg, files] = await Promise.all([fetchConfig(), fetchClaudeFiles()]);
     // remoteControl defaults to true in the runtime (enabled unless explicitly false)
     if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = true;
-    // Extract thinking budget from extraFlags
-    const flags: string[] = cfg.claude?.extraFlags || [];
-    const tbIdx = flags.indexOf("--thinking-budget");
-    if (tbIdx >= 0 && flags[tbIdx + 1]) {
-      thinkingLevel.value = flags[tbIdx + 1];
-    } else {
-      thinkingLevel.value = "";
-    }
+    // Extract thinking budget
+    const tb = cfg.claude?.thinkingBudget;
+    thinkingLevel.value = tb !== undefined ? String(tb) : "";
     config.value = cfg;
     claudeFiles.value = files;
     jsonText.value = JSON.stringify(cfg, null, 2);
@@ -270,15 +265,9 @@ async function handleSave() {
     if (section.value === "json") applyJson();
     if (msg.value) { saving.value = false; return; }
 
-    // Sync thinking budget into extraFlags
+    // Sync thinking budget
     if (!config.value.claude) config.value.claude = {};
-    const ef: string[] = (config.value.claude.extraFlags || []).filter(
-      (f: string, i: number, arr: string[]) => f !== "--thinking-budget" && arr[i - 1] !== "--thinking-budget"
-    );
-    if (thinkingLevel.value) {
-      ef.push("--thinking-budget", thinkingLevel.value);
-    }
-    config.value.claude.extraFlags = ef.length ? ef : undefined;
+    config.value.claude.thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
 
     await saveConfig(config.value);
 

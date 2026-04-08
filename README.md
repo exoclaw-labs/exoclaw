@@ -1,10 +1,6 @@
 # exoclaw
 
-Run Claude Code 24/7 in a container and talk to it from Slack, Discord, Telegram, WhatsApp, or a web dashboard — one container per user, fully self-hosted.
-
----
-
-<!-- Screenshot placeholder: add dashboard screenshot here -->
+Run Claude Code 24/7 in a container and talk to it from Slack, Discord, Telegram, WhatsApp, email, or a web dashboard — one container per user, fully self-hosted.
 
 ---
 
@@ -14,18 +10,18 @@ Claude Code is a capable autonomous agent, but it only runs when you're in a ter
 
 ## Features
 
-- **Persistent session** — Claude Code runs in tmux with `--remote-control --continue`. Auto-restarts on crash.
-- **Multi-channel** — Slack, Discord, Telegram, WhatsApp (via Twilio), WebSocket. One agent, all your channels.
-- **Web dashboard** — Vue 3 SPA. Chat, config editor, session history, audit log. No extra setup.
-- **Scheduled tasks** — SQLite-backed cron. Three job types: `prompt` (LLM-driven), `shell` (direct exec), `agent` (named agent delegation). Supports standard cron, ISO datetimes, and relative expressions (`now + 30m`).
-- **Self-improvement loop** — after each conversation, Claude consolidates its own memory and creates/updates skills. No manual prompt engineering required.
-- **Safety layer** — 70+ regex patterns scan inbound and outbound content for credential leaks, prompt injection, and steganography. Rate limiting, E-STOP (freeze or kill), and agent-initiated approval requests.
-- **Session search** — full-text search over conversation history via SQLite FTS5 with Porter stemmer. Optional hybrid mode adds vector embeddings for semantic search (OpenAI-compatible endpoint required).
-- **Agent registry** — define named agents in `.claude/agents/*.md` with YAML frontmatter (name, schedule, model). Loaded and registered with the cron scheduler on first run; hot-reloaded on change.
-- **Heartbeat** — scheduled check-ins run a configurable prompt every 30 minutes. Silent if nothing needs attention; broadcasts to connected clients if action is needed.
-- **Dreaming** — nightly consolidation of daily notes into long-term memory. Scores entries by signal quality and promotes high-value items to `MEMORY.md`.
-- **Insights** — usage analytics from session history: message volume, tool usage breakdown, hourly activity pattern, role distribution.
-- **One container per user** — no shared state, no shared config. Each instance is its own entity.
+- **Persistent session** — Claude Code runs continuously via the Agent SDK (or optionally in tmux). Auto-restarts on crash. Session history is preserved across restarts.
+- **Multi-channel** — Slack, Discord, Telegram, WhatsApp (via Twilio), email (IMAP/SMTP), WebSocket, and a built-in web terminal. One agent, all your channels.
+- **Web dashboard** — Vue 3 SPA with 13 themes. Chat, config editor, session history, terminal, audit log, skills management, agent management, and a setup wizard. No extra setup.
+- **Scheduled tasks** — SQLite-backed cron. Three job types: `prompt` (LLM-driven), `shell` (direct exec), `agent` (named agent delegation). Standard cron, ISO datetimes, and relative expressions (`now + 30m`).
+- **Self-improvement loop** — After each conversation, Claude consolidates its own memory and creates/updates skills. Daily notes are promoted to long-term memory via nightly "dreaming" consolidation.
+- **Safety layer** — 70+ regex patterns scan inbound and outbound content for credential leaks, prompt injection, and steganography. Rate limiting, E-STOP (freeze or kill), workspace scanning, and agent-initiated approval requests with 5-minute auto-deny timeout.
+- **Cost tracking** — Per-model token usage tracking with daily and monthly budget enforcement. Usage analytics via the dashboard.
+- **Session search** — Full-text search over conversation history via SQLite FTS5 with Porter stemmer. Optional hybrid mode adds vector embeddings for semantic search (OpenAI-compatible endpoint).
+- **Agent registry** — Define named agents in `.claude/agents/*.md` with YAML frontmatter (name, schedule, model). Loaded on first run, hot-reloaded on change, integrated with the cron scheduler.
+- **SOPs** — Standard Operating Procedures: multi-step automations with prompt, shell, and approval gates. Defined in `.claude/sops/*.md`, managed via API.
+- **Diagnostics** — Built-in doctor endpoint checks Claude auth, workspace health, disk space, channel configs, and API token status.
+- **One container per user** — No shared state, no shared config. Each instance is its own entity.
 
 ## Quick Start
 
@@ -78,6 +74,8 @@ docker compose up -d
 docker exec -it exoclaw claude login
 ```
 
+The `docker-compose.override.yml` demonstrates running multiple named instances (e.g. different agents on different ports) with separate data volumes.
+
 ## Channel Setup
 
 Channel config lives in `/home/agent/.exoclaw/config.json` (editable via the web dashboard or direct file edit). Secrets (tokens, signing keys) are stored in `secrets.json` and are never returned by the API.
@@ -109,27 +107,29 @@ WhatsApp support uses [Twilio](https://www.twilio.com/whatsapp). Set up a Twilio
 1. Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_WHATSAPP_NUMBER` in the dashboard.
 2. Point your Twilio webhook to `https://your-host/webhook/whatsapp`.
 
+### Email
+
+Async email channel via IMAP polling and SMTP replies:
+
+1. Configure IMAP/SMTP credentials in the dashboard.
+2. Set allowed sender addresses to filter incoming mail.
+3. The agent polls the inbox, processes new messages, and sends replies via SMTP.
+
 ### WebSocket / Web Chat
 
 Built-in. Connect to `ws://localhost:8080/ws/chat` with a Bearer token. The web dashboard uses this channel for live chat. No extra setup required.
 
+### Terminal
+
+Built-in persistent PTY terminal at `ws://localhost:8080/ws/terminal`. Accessible from the web dashboard. Session persists across reconnects with a 50KB output buffer.
+
 ### iMessage (macOS only)
 
-An optional Python bridge is included in `extras/imessage-bridge/`. It runs on a Mac, listens for incoming iMessages, and forwards them to the gateway's `/webhook` endpoint. See `extras/imessage-bridge/README.md`.
+An optional Python bridge is included in `extras/imessage-bridge/`. It runs on a Mac, listens for incoming iMessages, and forwards them to the gateway's `/webhook` endpoint.
 
 ## Configuration Reference
 
-Configuration is stored in `~/.exoclaw/config.json` (non-sensitive) and `~/.exoclaw/secrets.json` (tokens/keys). Both are managed by the web dashboard. The following env vars can override config at startup:
-
-| Variable | Description |
-|---|---|
-| `API_TOKEN` | Bearer token for all authenticated API endpoints. Unset = no auth. |
-| `SLACK_BOT_TOKEN` | Slack bot OAuth token (`xoxb-...`). |
-| `SLACK_SIGNING_SECRET` | Slack request signing secret. |
-| `DISCORD_BOT_TOKEN` | Discord bot token. |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather. |
-
-These can be set in `/home/agent/.exoclaw/.env` inside the container or passed via `docker run -e`.
+Configuration is stored in `~/.exoclaw/config.json` (non-sensitive) and `~/.exoclaw/secrets.json` (tokens/keys). Both are managed by the web dashboard.
 
 ### Key config.json fields
 
@@ -137,47 +137,53 @@ These can be set in `/home/agent/.exoclaw/.env` inside the container or passed v
 |---|---|---|
 | `name` | `"agent"` | Instance name. Used as the Claude `--name` and in channel display names. |
 | `port` | `8080` | Gateway HTTP/WS port. |
-| `model` | Claude default | Claude model to use for sessions. |
+| `claude.model` | Claude default | Claude model to use for sessions. |
+| `claude.permissionMode` | — | Permission mode for Claude Code. |
+| `claude.systemPrompt` | — | System prompt injected into sessions. |
+| `claude.mcpServers` | — | MCP server definitions passed to Claude. |
 | `channels.*` | disabled | Per-channel enable flag and config. |
-| `rateLimit.windowMs` | `60000` | Rate limit sliding window (ms). |
-| `rateLimit.max` | `20` | Max requests per window per IP. |
+| `rateLimit.maxRequestsPerMinute` | `20` | Max requests per minute per IP. |
+| `budget.dailyLimitUsd` | — | Daily cost limit in USD. |
+| `budget.monthlyLimitUsd` | — | Monthly cost limit in USD. |
+| `cron.enabled` | `true` | Enable/disable the cron scheduler. |
+| `selfImprovement.backgroundReview.enabled` | `true` | Enable post-turn memory/skill consolidation. |
+| `embeddings.enabled` | `false` | Enable vector embeddings for hybrid search. |
 
 ## Architecture
 
 ```
-                    ┌──────────────────────────────────────┐
-  Slack / Discord   │            exoclaw container          │
-  Telegram / WA  ──►│                                       │
-  WebSocket / Web   │  Hono HTTP/WS server (port 8080)      │
-                    │         │                             │
-                    │         ▼                             │
-                    │  Channel MCP server  (port 3200)      │
-                    │  stdio transport, JSONL               │
-                    │         │                             │
-                    │         ▼                             │
-                    │  Claude Code session (tmux)           │
-                    │  --remote-control --continue          │
-                    │         │                             │
-                    │         ▼                             │
-                    │  reply / clarify / request_approval   │
-                    │  session_search (SQLite FTS5)         │
-                    │                                       │
-                    │  Cron scheduler  ──►  claude -p       │
-                    │  Session indexer ──►  SQLite WAL       │
-                    │  Content scanner ──►  inbound+outbound│
-                    └──────────────────────────────────────┘
+                    ┌──────────────────────────────────────────┐
+  Slack / Discord   │              exoclaw container            │
+  Telegram / WA  ──►│                                           │
+  Email / Web       │  Hono HTTP/WS server (port 8080)          │
+                    │         │                                 │
+                    │         ▼                                 │
+                    │  Claude Agent SDK  ─or─  tmux session     │
+                    │  (claude-sdk.ts)        (claude.ts)        │
+                    │         │                                 │
+                    │         ▼                                 │
+                    │  reply / clarify / request_approval        │
+                    │  session_search (SQLite FTS5)              │
+                    │                                           │
+                    │  Cron scheduler  ──►  claude -p            │
+                    │  SOP engine     ──►  multi-step procedures │
+                    │  Cost tracker   ──►  budget enforcement    │
+                    │  Session indexer ──►  SQLite WAL           │
+                    │  Content scanner ──►  inbound + outbound   │
+                    │  Daily notes    ──►  dreaming → MEMORY.md  │
+                    └──────────────────────────────────────────┘
 ```
 
 **Message flow:**
 
 1. Message arrives via any channel adapter.
-2. Gateway pushes it to the Claude Code session through the channel MCP server (stdio bridge over HTTP).
-3. Claude sees a `<channel>` notification, processes it, calls `reply` to send a response.
+2. Gateway sends it to the Claude session — either via Agent SDK `query()` or through the channel MCP server (tmux mode).
+3. Claude processes the message, calls `reply` to send a response.
 4. Gateway streams the response back to the originating channel, scanning outbound content before delivery.
 
 **Claude-first design:** The gateway is thin scaffolding. If Claude Code can handle a feature via prompts, skills, or MCP tools, it does. Gateway-level implementations are reserved for things that need lower latency, stronger safety guarantees, or structured data.
 
-**Persistence:** All state (config, secrets, session history, skills, memories) lives in the `/home/agent` volume. Wipe the volume to reset the instance completely.
+**Persistence:** All state (config, secrets, session history, skills, memories, daily notes) lives in the `/home/agent` volume. Wipe the volume to reset the instance completely.
 
 ## API
 
@@ -186,44 +192,73 @@ Full OpenAPI 3.1 spec at `/openapi.json` once the container is running.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/health` | No | Liveness check |
+| GET | `/api/doctor` | Yes | Diagnostics report |
 | GET | `/api/status` | Yes | Session state, channel status |
 | GET/PUT | `/api/config` | Yes | Read/write config (secrets masked) |
+| GET/PUT | `/api/claude-files` | Yes | Read/write CLAUDE.md and workspace files |
 | POST | `/webhook` | Yes | Send a prompt programmatically |
 | GET | `/api/events` | Yes | SSE stream of session events |
 | POST | `/api/session/restart` | Yes | Restart the Claude session |
+| POST | `/api/session/fresh` | Yes | Start a fresh session |
 | GET | `/api/session/history` | Yes | Structured message history |
+| GET | `/api/sessions` | Yes | List all sessions |
+| GET | `/api/sessions/search` | Yes | Full-text search sessions |
+| GET/PUT/DELETE | `/api/skills/:name` | Yes | CRUD skills |
+| GET | `/api/agents` | Yes | List registered agents |
+| POST | `/api/agents/:name/run` | Yes | Trigger agent run |
+| GET/PUT/DELETE | `/api/sub-agents/:name` | Yes | CRUD sub-agents |
+| GET | `/api/insights` | Yes | Usage analytics |
+| GET | `/api/usage` | Yes | Cost/token usage |
+| GET | `/api/usage/budget` | Yes | Budget status |
+| GET/POST/DELETE | `/api/cron/*` | Yes | CRUD cron jobs, run/kill |
+| GET/POST | `/api/estop` | Yes | Emergency stop |
+| GET/POST | `/api/approvals` | Yes | Approval requests |
+| GET | `/api/channels/health` | Yes | Channel connection status |
+| GET/POST | `/api/sops/*` | Yes | SOPs and runs |
+| GET | `/api/audit` | Yes | Audit log |
+| GET | `/api/daily-notes` | Yes | Daily memory notes |
 | WS | `/ws/chat` | Yes | Live bidirectional chat |
+| WS | `/ws/terminal` | Yes | Persistent terminal |
 
 ## Contributing
 
 ```bash
 git clone https://github.com/exoclaw-labs/exoclaw
 cd exoclaw
-npm install
-npm run dev          # tsc --watch
-npm start            # node dist/index.js (requires a build first)
-npm test             # vitest
-npm run lint
+pnpm install
+pnpm dev               # tsc --watch
+pnpm start             # node dist/index.js (requires a build first)
+pnpm test              # vitest
+pnpm lint
 ```
 
-The web dashboard is a separate Vite project in `web/`. Run `npm install && npm run dev` there for hot-reload during UI work.
+The web dashboard is a separate Vite project in `web/`. Run `pnpm install && pnpm dev` there for hot-reload during UI work.
 
 **Structure:**
 
 ```
 src/
-  index.ts          entry point — wires channels, starts server
-  server.ts         Hono app, routes, middleware
-  claude.ts         tmux session management, I/O
-  config-store.ts   config.json + secrets.json persistence
-  cron.ts           cron scheduler
-  session-db.ts     SQLite session storage + FTS5
-  content-scanner.ts inbound/outbound safety scanner
-  channels/         Slack, Discord, Telegram, WhatsApp, WebSocket adapters
-channel-plugin/     Claude Code MCP plugin (reply, session_search, etc.)
-web/                Vue 3 dashboard (Vite)
-extras/             Optional integrations (iMessage bridge)
-default-skills/     Skill templates seeded on first run
+  index.ts              entry point — loads config, starts server, registers channels
+  server.ts             Hono app, OpenAPI routes, middleware
+  claude.ts             tmux session backend
+  claude-sdk.ts         Agent SDK session backend (default)
+  config-store.ts       config.json + secrets.json persistence
+  schemas.ts            Zod schemas for config validation
+  channel-server.ts     MCP server (reply, session_search, clarify, request_approval)
+  channel-health.ts     per-channel health monitoring
+  content-scanner.ts    inbound/outbound safety scanner
+  cost-tracker.ts       token usage + budget enforcement
+  cron.ts               cron scheduler
+  session-db.ts         SQLite session storage + FTS5
+  sop.ts                standard operating procedures engine
+  daily-notes.ts        daily memory files
+  dreaming.ts           nightly memory consolidation
+  doctor.ts             diagnostics
+  channels/             Slack, Discord, Telegram, WhatsApp, email, WebSocket, terminal adapters
+channel-plugin/         Claude Code MCP plugin (tmux backend)
+web/                    Vue 3 dashboard (Vite)
+extras/                 Optional integrations (iMessage bridge)
+default-skills/         Skill templates seeded on first run
 ```
 
 Pull requests welcome. Keep the gateway thin — if it can be a skill or a prompt, it should be.

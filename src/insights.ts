@@ -10,8 +10,8 @@
  *
  * Adapted from hermes-agent-custom's InsightsEngine (agent/insights.py).
  *
- * Note: Token/cost estimation is NOT feasible since Claude Code CLI
- * doesn't expose token counts in its JSONL output.
+ * Token/cost tracking is handled separately by CostTracker (cost-tracker.ts)
+ * which extracts usage data from Agent SDK query results.
  */
 
 import type { SessionDB } from "./session-db.js";

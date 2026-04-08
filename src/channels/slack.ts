@@ -6,7 +6,7 @@
 
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Context } from "hono";
-import type { Claude } from "../claude.js";
+import type { Claude } from "../claude-sdk.js";
 
 let BOT_TOKEN = "";
 let SIGNING_SECRET = "";

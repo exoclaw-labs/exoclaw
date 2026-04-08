@@ -18,7 +18,7 @@
  */
 
 import type { Context } from "hono";
-import type { Claude } from "../claude.js";
+import type { Claude } from "../claude-sdk.js";
 import { scanForLeaks } from "../content-scanner.js";
 
 const TOKEN = process.env.WHATSAPP_TOKEN || "";

@@ -26,15 +26,7 @@ x-claude-env: &claude-env
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "true"
   CLAUDE_CODE_TEAM_NAME: ${CLAUDE_CODE_TEAM_NAME:-exoclaw}
 
-  # ── Headless / tmux-friendly ──────────────────────────────────────────────
-  CLAUDE_CODE_DISABLE_MOUSE: "1"
-  CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1"
-  CLAUDE_CODE_NO_FLICKER: "1"
-  CLAUDE_CODE_ACCESSIBILITY: "0"
-  NO_COLOR: "1"
-
   # ── Telemetry / updates ───────────────────────────────────────────────────
-  # Note: DISABLE_TELEMETRY breaks remote control — leave enabled
   DISABLE_AUTOUPDATER: "true"
   DISABLE_COST_WARNINGS: ${DISABLE_COST_WARNINGS:-false}
 
@@ -47,7 +39,7 @@ x-claude-env: &claude-env
   CLAUDE_STREAM_IDLE_TIMEOUT_MS: ${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-90000}
 
   # ── Context & compaction ──────────────────────────────────────────────────
-  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-95}
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-50}
 
   # ── Output ────────────────────────────────────────────────────────────────
   BASH_MAX_OUTPUT_LENGTH: ${BASH_MAX_OUTPUT_LENGTH:-}
@@ -60,13 +52,22 @@ x-claude-env: &claude-env
   # ── Debug logging (opt-in) ────────────────────────────────────────────────
   CLAUDE_CODE_DEBUG_LOG_LEVEL: ${CLAUDE_CODE_DEBUG_LOG_LEVEL:-info}
 
+  # ── Remote control ───────────────────────────────────────────────────────
+  # Set to "true" to spawn a background `claude remote-control` process
+  ENABLE_REMOTE_CONTROL: ${ENABLE_REMOTE_CONTROL:-false}
+
+  # ── SDK mode ─────────────────────────────────────────────────────────────
+  # Set to "true" to use unstable V2 session API (persistent in-process session)
+  # Default (false) uses stable query() with resume — full feature set
+  CLAUDE_SDK_V2: ${CLAUDE_SDK_V2:-false}
+
 
 services:
   exoclaw:
     build: .
     container_name: exoclaw
     restart: unless-stopped
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]
     shm_size: "2gb"
     environment:
       <<: *claude-env
@@ -79,6 +80,20 @@ services:
       retries: 3
       start_period: 15s
 
+  shortlived:
+    build: .
+    container_name: shortlived
+    restart: unless-stopped
+    ports: ["127.0.0.1:8085:8080"]
+    shm_size: "2gb"
+    environment:
+      <<: *claude-env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   exoclaw-data:

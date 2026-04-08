@@ -30,6 +30,7 @@ export const ClaudeConfigSchema = z.object({
   })).optional(),
   allowedTools: z.array(z.string()).optional(),
   disallowedTools: z.array(z.string()).optional(),
+  thinkingBudget: z.number().int().min(0).optional(),
   extraFlags: z.array(z.string()).optional(),
   remoteControl: z.boolean().optional(),
 }).passthrough();
@@ -74,6 +75,19 @@ export const EmbeddingsConfigSchema = z.object({
   keywordWeight: z.number().min(0).max(1).optional(),
 }).passthrough();
 
+export const BudgetConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  dailyLimitUsd: z.number().positive().optional(),
+  monthlyLimitUsd: z.number().positive().optional(),
+}).passthrough();
+
+export const QueueConfigSchema = z.object({
+  mode: z.enum(["followup", "collect", "reject"]).optional(),
+  maxQueueSize: z.number().positive().optional(),
+  collectTimeoutMs: z.number().positive().optional(),
+  maxWaitMs: z.number().positive().optional(),
+}).passthrough();
+
 export const GatewayConfigSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().positive(),
@@ -81,7 +95,7 @@ export const GatewayConfigSchema = z.object({
   apiToken: z.string().optional(),
   claudeApiToken: z.string().optional(),
   setupComplete: z.boolean().optional(),
-  browserTool: z.enum(["gologin", "browser-use", "agent-browser", "none"]).optional(),
+  browserTool: z.enum(["browser-use", "agent-browser", "none"]).optional(),
   claude: ClaudeConfigSchema,
   channels: z.record(ChannelConfigSchema).optional(),
   selfImprovement: SelfImprovementConfigSchema.optional(),
@@ -92,6 +106,8 @@ export const GatewayConfigSchema = z.object({
     retentionDays: z.number().positive().optional(),
   }).passthrough().optional(),
   embeddings: EmbeddingsConfigSchema.optional(),
+  budget: BudgetConfigSchema.optional(),
+  queue: QueueConfigSchema.optional(),
 }).passthrough();
 
 /** Inferred TypeScript type from the gateway config schema. */

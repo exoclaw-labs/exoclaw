@@ -16,15 +16,7 @@ x-claude-env: &claude-env
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "true"
   CLAUDE_CODE_TEAM_NAME: ${CLAUDE_CODE_TEAM_NAME:-exoclaw}
 
-  # ── Headless / tmux-friendly ──────────────────────────────────────────────
-  CLAUDE_CODE_DISABLE_MOUSE: "1"
-  CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1"
-  CLAUDE_CODE_NO_FLICKER: "1"
-  CLAUDE_CODE_ACCESSIBILITY: "0"
-  NO_COLOR: "1"
-
   # ── Telemetry / updates ───────────────────────────────────────────────────
-  # Note: DISABLE_TELEMETRY breaks remote control — leave enabled
   DISABLE_AUTOUPDATER: "true"
   DISABLE_COST_WARNINGS: ${DISABLE_COST_WARNINGS:-false}
 
@@ -37,7 +29,7 @@ x-claude-env: &claude-env
   CLAUDE_STREAM_IDLE_TIMEOUT_MS: ${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-90000}
 
   # ── Context & compaction ──────────────────────────────────────────────────
-  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-95}
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-50}
 
   # ── Output ────────────────────────────────────────────────────────────────
   BASH_MAX_OUTPUT_LENGTH: ${BASH_MAX_OUTPUT_LENGTH:-}
@@ -49,6 +41,12 @@ x-claude-env: &claude-env
 
   # ── Debug logging (opt-in) ────────────────────────────────────────────────
   CLAUDE_CODE_DEBUG_LOG_LEVEL: ${CLAUDE_CODE_DEBUG_LOG_LEVEL:-info}
+
+  # ── Remote control ───────────────────────────────────────────────────────
+  ENABLE_REMOTE_CONTROL: ${ENABLE_REMOTE_CONTROL:-false}
+
+  # ── SDK mode ─────────────────────────────────────────────────────────────
+  CLAUDE_SDK_V2: ${CLAUDE_SDK_V2:-false}
 
 x-agent-defaults: &agent-defaults
   build: .
@@ -68,14 +66,14 @@ services:
   gregclaw:
     <<: *agent-defaults
     container_name: gregclaw
-    ports: ["8081:8080"]
+    ports: ["127.0.0.1:8081:8080"]
     volumes:
       - gregclaw-data:/home/agent
 
   linda:
     <<: *agent-defaults
     container_name: linda
-    ports: ["8082:8080"]
+    ports: ["127.0.0.1:8082:8080"]
     volumes:
       - lindaclaw-data:/home/agent
 

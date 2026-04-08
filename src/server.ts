@@ -18,8 +18,8 @@ import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
-import { Claude, type ClaudeConfig } from "./claude.js";
+import { exec, execSync } from "child_process";
+import { Claude, type ClaudeConfig } from "./claude-sdk.js";
 import { handleSlackEvent, startSlack } from "./channels/slack.js";
 import { loadConfig, loadConfigMasked, saveConfig, saveConfigSafe } from "./config-store.js";
 import { SessionDB } from "./session-db.js";
@@ -42,6 +42,21 @@ import { PROJECT_DIR_SUFFIX } from "./constants.js";
 import { GatewayConfigSchema } from "./schemas.js";
 import { AgentRegistry } from "./agent-registry.js";
 import { reviewAgentRun, isAgentJob } from "./agent-review.js";
+import { CostTracker, type BudgetConfig } from "./cost-tracker.js";
+import { ChannelHealthMonitor } from "./channel-health.js";
+import { WorkspaceScanner } from "./workspace-scanner.js";
+import { SOPEngine } from "./sop.js";
+import { enrichLinks } from "./link-enricher.js";
+import { runDiagnostics } from "./doctor.js";
+import { MessageQueue, type QueueConfig } from "./message-queue.js";
+import { registerOpenAIRoutes } from "./openai-compat.js";
+import { HookRegistry, type HookContext } from "./hooks.js";
+import { KnowledgeGraph } from "./knowledge-graph.js";
+import { compressSession, compressRecentSessions } from "./context-compressor.js";
+import { runPrune, seedPruneJob } from "./session-pruner.js";
+import { TunnelManager, type TunnelConfig as TunnelCfg } from "./tunnel.js";
+import { DelegationManager, SwarmCoordinator, MessageRouter } from "./multi-agent.js";
+import { analyzeImage, generateImage } from "./media-tools.js";
 
 // ── Schemas ──
 
@@ -107,7 +122,7 @@ export interface GatewayConfig {
   host: string;
   apiToken?: string;
   setupComplete?: boolean;
-  browserTool?: "gologin" | "browser-use" | "agent-browser" | "none";
+  browserTool?: "browser-use" | "agent-browser" | "none";
   claude: ClaudeConfig;
   channels: {
     slack?: { enabled: boolean };
@@ -121,6 +136,9 @@ export interface GatewayConfig {
   rateLimit?: Partial<RateLimitConfig>;
   audit?: { enabled?: boolean; retentionDays?: number };
   embeddings?: Partial<EmbeddingConfig>;
+  budget?: Partial<BudgetConfig>;
+  queue?: Partial<QueueConfig>;
+  tunnel?: Partial<TunnelCfg>;
 }
 
 const startedAt = Date.now();
@@ -160,6 +178,12 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: ok ? "ok" as const : "down" as const, paired: true, require_pairing: false }, ok ? 200 : 503);
   });
 
+  // ── GET /api/doctor ──
+
+  app.get("/api/doctor", (c) => {
+    return c.json(runDiagnostics());
+  });
+
   // ── GET /api/status ──
 
   app.openapi(statusRoute, (c) => {
@@ -169,27 +193,43 @@ export function createApp(config: GatewayConfig) {
       uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
       gateway_port: config.port,
       paired: true,
-      session: { alive: claude.alive, busy: claude.busy, io: claude.usingChannel ? "mcp-channel" : "tmux", remoteControlUrl: claude.remoteControlUrl },
+      session: { alive: claude.alive, busy: claude.busy, io: "agent-sdk", remoteControlUrl: claude.remoteControlUrl },
     });
   });
 
   // ── POST /webhook ──
 
+  const messageQueue = new MessageQueue(config.queue);
+
   app.post("/webhook", async (c) => {
     const parsed = WebhookBody.safeParse(await c.req.json());
     if (!parsed.success) return c.json({ error: "validation_error", detail: parsed.error.message }, 400);
     if (!claude.alive) return c.json({ error: "session_not_running" }, 503);
-    if (claude.busy) return c.json({ error: "session_busy" }, 429);
 
     const sessionId = c.req.header("x-session-id") || c.req.query("session_id") || crypto.randomUUID();
 
     try {
-      const { text } = await collectResponse(claude, parsed.data.message);
-      return c.json({ response: text, session_id: sessionId });
+      // Enrich URLs in the message with titles/descriptions before sending to Claude
+      const enrichedMessage = await enrichLinks(parsed.data.message).catch(() => parsed.data.message);
+      const text = await messageQueue.enqueue(
+        enrichedMessage,
+        "webhook",
+        () => claude.busy,
+        (prompt) => claude.send(prompt),
+      );
+      return c.json({ response: text, session_id: sessionId, queued: messageQueue.pending > 0 });
     } catch (err) {
+      const msg = String(err);
+      if (msg.includes("busy") || msg.includes("Queue full") || msg.includes("Queue timeout")) {
+        return c.json({ error: "session_busy", detail: msg, queue_mode: messageQueue.mode, pending: messageQueue.pending }, 429);
+      }
       log("error", `Webhook agent error: ${err}`);
       return c.json({ error: "agent_error", detail: "An internal error occurred while processing the request" }, 500);
     }
+  });
+
+  app.get("/api/queue", (c) => {
+    return c.json({ mode: messageQueue.mode, pending: messageQueue.pending });
   });
 
   // ── GET /api/events (SSE) ──
@@ -337,9 +377,10 @@ export function createApp(config: GatewayConfig) {
 
   app.get("/api/config", (c) => {
     try {
-      return c.json(loadConfigMasked());
+      const masked = loadConfigMasked();
+      return c.json({ ...masked, chatScrollback: parseInt(process.env.CHAT_SCROLLBACK || "5000", 10) });
     } catch {
-      return c.json(config);
+      return c.json({ ...config, chatScrollback: parseInt(process.env.CHAT_SCROLLBACK || "5000", 10) });
     }
   });
 
@@ -586,12 +627,72 @@ export function createApp(config: GatewayConfig) {
     return c.json({ messages: sessionDb.getSessionMessages(id) });
   });
 
+  app.patch("/api/sessions/:id", async (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid session id" }, 400);
+    const { title } = await c.req.json() as { title: string };
+    if (!title || typeof title !== "string") return c.json({ error: "title required" }, 400);
+    const ok = sessionDb.renameSession(id, title.slice(0, 200));
+    if (!ok) return c.json({ error: "session not found" }, 404);
+    audit.log({ event_type: "session", detail: `Renamed session ${id} to "${title.slice(0, 50)}"`, source: "api" });
+    return c.json({ status: "ok" });
+  });
+
+  app.delete("/api/sessions/:id", (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid session id" }, 400);
+    const ok = sessionDb.deleteSession(id);
+    if (!ok) return c.json({ error: "session not found" }, 404);
+    audit.log({ event_type: "session", detail: `Deleted session ${id}`, source: "api" });
+    return c.json({ status: "ok" });
+  });
+
   // ── Insights API ──
 
   app.get("/api/insights", (c) => {
     if (si.insights?.enabled === false) return c.json({ error: "insights disabled" }, 403);
     const days = parseInt(c.req.query("days") || "30");
     return c.json(generateInsights(sessionDb, days));
+  });
+
+  // ── Cost Tracker & Budget Enforcement ──
+
+  const costTracker = new CostTracker(sessionDb.db, config.budget);
+
+  // Hook: record usage data after each SDK query
+  claude.onUsage = (data) => {
+    try {
+      costTracker.recordUsage(data);
+      broadcastSSE("usage", {
+        cost_usd: data.costUsd,
+        input_tokens: data.usage?.input_tokens ?? 0,
+        output_tokens: data.usage?.output_tokens ?? 0,
+        duration_ms: data.durationMs,
+      });
+    } catch (err) {
+      log("error", `Cost tracking failed: ${err}`);
+    }
+  };
+
+  // Budget enforcement — reject prompts when budget exceeded
+  if (config.budget?.enabled) {
+    app.use("/webhook", async (c, next) => {
+      const budget = costTracker.checkBudget();
+      if (budget.exceeded) {
+        audit.log({ event_type: "auth", detail: budget.exceeded_reason!, source: "gateway", severity: "warn" });
+        return c.json({ error: "budget_exceeded", detail: budget.exceeded_reason }, 429);
+      }
+      return next();
+    });
+  }
+
+  app.get("/api/usage", (c) => {
+    const days = parseInt(c.req.query("days") || "30");
+    return c.json(costTracker.summary(days));
+  });
+
+  app.get("/api/usage/budget", (c) => {
+    return c.json(costTracker.checkBudget());
   });
 
   // ── Background Review API ──
@@ -736,6 +837,23 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: "ok", detail: "Job triggered" });
   });
 
+  app.get("/api/cron/running", (c) => {
+    return c.json({ running: scheduler.listRunning() });
+  });
+
+  app.get("/api/cron/:id/status", (c) => {
+    const status = scheduler.getRunningStatus(c.req.param("id"));
+    if (!status) return c.json({ running: false });
+    return c.json(status);
+  });
+
+  app.post("/api/cron/:id/kill", (c) => {
+    const killed = scheduler.killJob(c.req.param("id"));
+    if (!killed) return c.json({ error: "not_running" }, 404);
+    audit.log({ event_type: "cron_run", detail: `Killed running job: ${c.req.param("id")}`, source: "api", severity: "warn" });
+    return c.json({ status: "ok", detail: "Job killed" });
+  });
+
   // ── E-STOP ──
 
   const estop = new Estop(claude, scheduler, audit);
@@ -768,10 +886,139 @@ export function createApp(config: GatewayConfig) {
 
   // ── Auth / Setup API ──
 
+  // ── Login tmux session (temporary — only while unauthenticated) ──
+
+  const LOGIN_TMUX = "exoclaw-login";
+
+  function isLoginTmuxAlive(): boolean {
+    try {
+      execSync(`tmux has-session -t ${LOGIN_TMUX} 2>&1`);
+      return true;
+    } catch { return false; }
+  }
+
+  function startLoginTmux(): void {
+    if (isLoginTmuxAlive()) return;
+    log("info", "Spawning login tmux session");
+    try {
+      // Spawn a persistent shell — don't run "claude login" as the session
+      // command, because if it exits the tmux session dies and the pane
+      // content (including any error) is lost.
+      execSync(`tmux new-session -d -s ${LOGIN_TMUX} -x 120 -y 40 2>&1`, { env: process.env });
+      execSync(`tmux send-keys -t ${LOGIN_TMUX} "claude login" Enter`, { env: process.env });
+      startLoginAutoAccept();
+    } catch (err) {
+      log("error", `Failed to start login tmux: ${err}`);
+    }
+  }
+
+  function captureLoginPane(): string {
+    try {
+      const pane = execSync(`tmux capture-pane -t ${LOGIN_TMUX} -p 2>&1`, {
+        encoding: "utf-8",
+        env: process.env,
+      });
+      log("debug", `Login pane (last 80): ${JSON.stringify(pane.trimEnd().slice(-80))}`);
+      return pane;
+    } catch { return ""; }
+  }
+
+  function sendLoginKeys(keys: string): void {
+    try {
+      execSync(`tmux send-keys -t ${LOGIN_TMUX} ${keys}`, { env: process.env });
+    } catch (err) {
+      log("error", `Failed to send login keys: ${err}`);
+    }
+  }
+
+  function killLoginTmux(): void {
+    if (!isLoginTmuxAlive()) return;
+    log("info", "Killing login tmux session (auth complete)");
+    if (loginAutoAcceptTimer) { clearInterval(loginAutoAcceptTimer); loginAutoAcceptTimer = null; }
+    try { execSync(`tmux kill-session -t ${LOGIN_TMUX} 2>&1`); } catch {}
+  }
+
+  /**
+   * Auto-accept post-login TUI prompts in the login tmux session.
+   * Handles the same interactive prompts that the old autoAcceptPrompts()
+   * handled — theme picker, workspace trust, bypass permissions, etc.
+   * Only runs while the login tmux is alive; clears itself when done.
+   */
+  let loginAutoAcceptTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startLoginAutoAccept(): void {
+    if (loginAutoAcceptTimer) return;
+    loginAutoAcceptTimer = setInterval(() => {
+      if (!isLoginTmuxAlive()) {
+        clearInterval(loginAutoAcceptTimer!);
+        loginAutoAcceptTimer = null;
+        return;
+      }
+
+      let pane: string;
+      try {
+        pane = execSync(`tmux capture-pane -t ${LOGIN_TMUX} -p 2>&1`, {
+          encoding: "utf-8", env: process.env,
+        });
+      } catch { return; }
+
+      // Theme picker — accept default
+      if (pane.includes("Syntax theme:") || pane.includes("Choose a theme") || pane.includes("Select a color")) {
+        log("info", "Login auto-accept: theme picker");
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        return;
+      }
+
+      // Workspace trust
+      if (pane.includes("Yes, I trust this folder")) {
+        log("info", "Login auto-accept: workspace trust");
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        return;
+      }
+
+      // "Press Enter to continue" after login success
+      if (pane.includes("Press Enter to continue") || pane.includes("Login successful")) {
+        log("info", "Login auto-accept: post-login continue");
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        return;
+      }
+
+      // Bypass permissions warning — navigate Down to "Yes, I accept" then Enter
+      if (pane.includes("Bypass Permissions") || (pane.includes("Yes, I accept") && !pane.includes("Select login method"))) {
+        log("info", "Login auto-accept: bypass permissions");
+        try {
+          execSync(`tmux send-keys -t ${LOGIN_TMUX} Down`, { env: process.env });
+          setTimeout(() => {
+            try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+          }, 300);
+        } catch {}
+        return;
+      }
+
+      // Generic "Enter to confirm" prompts (but not login/API key prompts)
+      if (
+        (pane.includes("Enter to confirm") || pane.includes("Esc to cancel")) &&
+        !pane.includes("Select login method") &&
+        !pane.includes("Paste code here") &&
+        !pane.includes("API key") &&
+        !pane.includes("No, exit")
+      ) {
+        log("info", "Login auto-accept: generic confirm");
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        return;
+      }
+    }, 2000);
+  }
+
   app.get("/api/auth/status", async (c) => {
     try {
       const out = execSync("claude auth status 2>&1", { encoding: "utf-8", env: process.env });
-      return c.json(JSON.parse(out));
+      const status = JSON.parse(out);
+      // Tear down the login tmux once auth succeeds
+      if (status?.loggedIn && isLoginTmuxAlive()) {
+        killLoginTmux();
+      }
+      return c.json(status);
     } catch {
       return c.json({ loggedIn: false });
     }
@@ -786,6 +1033,7 @@ export function createApp(config: GatewayConfig) {
         encoding: "utf-8",
         env: process.env,
       });
+      killLoginTmux();
       return c.json({ status: "ok" });
     } catch (err) {
       log("error", `Auth setup-token failed: ${err}`);
@@ -793,29 +1041,45 @@ export function createApp(config: GatewayConfig) {
     }
   });
 
-  // Expose tmux pane content so the UI can show login prompts / session state
+  // Pane endpoint — serves login tmux when unauthenticated, SDK status otherwise
   app.get("/api/session/pane", (c) => {
-    try {
-      const lines = Math.min(Number(c.req.query("lines")) || 50, 500);
-      const content = execSync(`tmux capture-pane -t claude -p -S -${lines} 2>&1`, { encoding: "utf-8" });
-      return c.json({ content });
-    } catch {
-      return c.json({ content: "", error: "no_session" });
+    // If login tmux is alive, return its pane content
+    if (isLoginTmuxAlive()) {
+      const pane = captureLoginPane();
+      // If claude login finished and returned to shell prompt, re-run it
+      // (Shell prompt ends with $ — distinct from Claude's ❯ prompt)
+      const trimmed = pane.trimEnd();
+      if (trimmed.endsWith("$") || trimmed.endsWith("#")) {
+        log("info", "Login command returned to shell — re-running claude login");
+        execSync(`tmux send-keys -t ${LOGIN_TMUX} "claude login" Enter`, { env: process.env });
+      }
+      return c.json({ content: pane });
     }
+    // Not logged in and no login tmux yet — start one
+    try {
+      const out = execSync("claude auth status 2>&1", { encoding: "utf-8", env: process.env });
+      const status = JSON.parse(out);
+      if (!status?.loggedIn) {
+        startLoginTmux();
+        return c.json({ content: captureLoginPane() || "Starting login..." });
+      }
+    } catch {
+      startLoginTmux();
+      return c.json({ content: captureLoginPane() || "Starting login..." });
+    }
+    return c.json({
+      content: `[agent-sdk mode] session=${claude.activeSessionId || "none"} alive=${claude.alive} busy=${claude.busy}`,
+    });
   });
 
-  // Send keystrokes to the tmux session (for interactive prompts like login selection)
+  // Keys endpoint — sends to login tmux when active, otherwise not supported
   app.post("/api/session/keys", async (c) => {
-    const { keys } = await c.req.json() as { keys: string };
-    if (!keys) return c.json({ error: "keys_required" }, 400);
-
-    try {
-      execSync(`tmux send-keys -t claude ${keys}`, { encoding: "utf-8" });
+    if (isLoginTmuxAlive()) {
+      const { keys } = await c.req.json() as { keys: string };
+      if (keys) sendLoginKeys(keys);
       return c.json({ status: "ok" });
-    } catch (err) {
-      log("error", `tmux send-keys failed: ${err}`);
-      return c.json({ error: "send_failed", detail: "Failed to send keys to session" }, 500);
     }
+    return c.json({ error: "not_supported", detail: "No active login session" }, 400);
   });
 
   // ── Setup Wizard API ──
@@ -832,7 +1096,7 @@ export function createApp(config: GatewayConfig) {
   app.post("/api/setup/complete", async (c) => {
     try {
       const { browserTool, browserApiKey, composioApiKey } = await c.req.json() as {
-        browserTool: "gologin" | "browser-use" | "agent-browser" | "none";
+        browserTool: "browser-use" | "agent-browser" | "none";
         browserApiKey?: string;
         composioApiKey?: string;
       };
@@ -847,20 +1111,13 @@ export function createApp(config: GatewayConfig) {
       const servers = cfg.claude.mcpServers as Record<string, any>;
 
       // Disable all browser MCP servers first
-      for (const name of ["agent-browser", "gologin-mcp", "browser-use"]) {
+      for (const name of ["agent-browser", "browser-use"]) {
         if (servers[name]) servers[name].enabled = false;
       }
+      // Clean up legacy gologin-mcp if present
+      if (servers["gologin-mcp"]) { delete servers["gologin-mcp"]; }
 
       switch (browserTool) {
-        case "gologin":
-          servers["gologin-mcp"] = {
-            enabled: true,
-            type: "stdio",
-            command: "npx",
-            args: ["gologin-mcp"],
-            env: { API_TOKEN: browserApiKey || "" },
-          };
-          break;
         case "browser-use":
           servers["browser-use"] = {
             enabled: true,
@@ -875,6 +1132,17 @@ export function createApp(config: GatewayConfig) {
             ...(servers["agent-browser"] || { type: "stdio", command: "npx", args: ["agent-browser-mcp"] }),
             enabled: true,
           };
+          // Install Chrome binary in the background (~/.agent-browser/, persisted via volume)
+          {
+            const installCmd = existsSync("/app/scripts/install-chrome.sh")
+              ? "sudo /app/scripts/install-chrome.sh"
+              : "agent-browser install";
+            log("info", `Installing Chrome in background: ${installCmd}`);
+            exec(installCmd, { timeout: 120_000 }, (err) => {
+              if (err) log("warn", `Chrome install failed (agent-browser may not work): ${err.message}`);
+              else log("info", "Chrome installed successfully for agent-browser");
+            });
+          }
           break;
         case "none":
           // All already disabled above
@@ -1225,12 +1493,277 @@ export function createApp(config: GatewayConfig) {
     return c.json({ status: "ok", approved });
   });
 
+  // ── Channel Health Monitor ──
+
+  const channelHealth = new ChannelHealthMonitor();
+
+  channelHealth.onChange((name, health) => {
+    broadcastSSE("channel_health", { channel: name, status: health.status, error: health.lastError });
+    if (health.status === "error") {
+      audit.log({ event_type: "error", detail: `Channel ${name}: ${health.lastError}`, source: "system", severity: "warn" });
+    }
+  });
+
+  app.get("/api/channels/health", (c) => {
+    return c.json({ channels: channelHealth.getAll() });
+  });
+
+  // ── Workspace File Scanner ──
+
+  const workspaceScanner = new WorkspaceScanner(ws);
+  if (si.contentScanning?.enabled !== false) {
+    workspaceScanner.onAlert((alert) => {
+      audit.log({
+        event_type: "error",
+        detail: `Credential leak in workspace file: ${alert.file} — ${alert.reason}`,
+        source: "system",
+        severity: "critical",
+      });
+      broadcastSSE("workspace_alert", alert);
+    });
+    workspaceScanner.start();
+  }
+
+  app.get("/api/workspace/alerts", (c) => {
+    return c.json({ alerts: workspaceScanner.getRecentAlerts() });
+  });
+
+  // ── SOP Engine ──
+
+  const sopEngine = new SOPEngine(sessionDb.db, config.claude.model, config.claude.permissionMode);
+
+  sopEngine.onStepComplete((run, stepIdx, result, status) => {
+    broadcastSSE("sop_step", { run_id: run.id, sop: run.sop_name, step: stepIdx, status, result: result.slice(0, 200) });
+    if (status === "error") {
+      audit.log({ event_type: "error", detail: `SOP ${run.sop_name} step ${stepIdx} failed`, source: "sop", severity: "warn" });
+    }
+  });
+
+  app.get("/api/sops", (c) => {
+    return c.json({ sops: sopEngine.listSOPs() });
+  });
+
+  app.get("/api/sops/:name", (c) => {
+    const sop = sopEngine.getSOP(c.req.param("name"));
+    if (!sop) return c.json({ error: "not_found" }, 404);
+    return c.json(sop);
+  });
+
+  app.post("/api/sops/:name/run", async (c) => {
+    try {
+      const runId = await sopEngine.execute(c.req.param("name"));
+      audit.log({ event_type: "cron_run", detail: `SOP "${c.req.param("name")}" started (run ${runId})`, source: "api" });
+      return c.json({ status: "ok", run_id: runId });
+    } catch (err) {
+      return c.json({ error: "execution_failed", detail: String(err) }, 400);
+    }
+  });
+
+  app.get("/api/sop-runs", (c) => {
+    const sopName = c.req.query("sop") || undefined;
+    const limit = parseInt(c.req.query("limit") || "20");
+    return c.json({ runs: sopEngine.listRuns(sopName, limit) });
+  });
+
+  app.get("/api/sop-runs/:id", (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    const run = sopEngine.getRun(id);
+    if (!run) return c.json({ error: "not_found" }, 404);
+    return c.json(run);
+  });
+
+  app.post("/api/sop-runs/:id/resume", async (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    const resumed = await sopEngine.resumeRun(id);
+    if (!resumed) return c.json({ error: "not_paused_or_not_found" }, 404);
+    audit.log({ event_type: "cron_run", detail: `SOP run ${id} resumed`, source: "api" });
+    return c.json({ status: "ok" });
+  });
+
+  // ── OpenAI-Compatible API ──
+
+  registerOpenAIRoutes(app, claude);
+
+  // ── Hook System ──
+
+  const hooks = new HookRegistry();
+  hooks.loadFromDisk().catch(() => {}); // Non-blocking
+
+  app.get("/api/hooks", (c) => {
+    return c.json({ plugins: hooks.list() });
+  });
+
+  // ── Knowledge Graph ──
+
+  const knowledgeGraph = new KnowledgeGraph(sessionDb.db);
+
+  app.get("/api/knowledge", (c) => {
+    const q = c.req.query("q");
+    if (q) {
+      return c.json({ results: knowledgeGraph.search(q) });
+    }
+    const type = c.req.query("type") as any;
+    const limit = parseInt(c.req.query("limit") || "50");
+    return c.json({ nodes: knowledgeGraph.listNodes(type, limit), stats: knowledgeGraph.stats() });
+  });
+
+  app.post("/api/knowledge/nodes", async (c) => {
+    const { type, name, description, tags } = await c.req.json() as any;
+    if (!type || !name) return c.json({ error: "type and name required" }, 400);
+    const node = knowledgeGraph.upsertNode(type, name, description, tags);
+    return c.json({ node });
+  });
+
+  app.delete("/api/knowledge/nodes/:id", (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    if (!knowledgeGraph.deleteNode(id)) return c.json({ error: "not_found" }, 404);
+    return c.json({ status: "ok" });
+  });
+
+  app.post("/api/knowledge/edges", async (c) => {
+    const { source_id, target_id, edge_type, weight, context: edgeContext } = await c.req.json() as any;
+    if (!source_id || !target_id || !edge_type) return c.json({ error: "source_id, target_id, edge_type required" }, 400);
+    const edge = knowledgeGraph.addEdge(source_id, target_id, edge_type, weight, edgeContext);
+    return c.json({ edge });
+  });
+
+  app.get("/api/knowledge/nodes/:id/edges", (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    return c.json(knowledgeGraph.getEdges(id));
+  });
+
+  app.get("/api/knowledge/nodes/:id/traverse", (c) => {
+    const id = parseInt(c.req.param("id"));
+    const hops = parseInt(c.req.query("hops") || "2");
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    const result = knowledgeGraph.traverse(id, hops);
+    return c.json({ nodes: Array.from(result.values()) });
+  });
+
+  // ── Context Compression ──
+
+  app.post("/api/sessions/:id/compress", async (c) => {
+    const id = parseInt(c.req.param("id"));
+    if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+    const result = await compressSession(sessionDb, id, config.claude.model);
+    if (!result) return c.json({ error: "nothing_to_compress" }, 404);
+    return c.json(result);
+  });
+
+  app.get("/api/sessions/context", async (c) => {
+    const count = parseInt(c.req.query("count") || "3");
+    const context = await compressRecentSessions(sessionDb, count, config.claude.model);
+    return c.json({ context });
+  });
+
+  // ── Session Pruning ──
+
+  // Run initial prune on startup
+  runPrune(sessionDb, {
+    messageRetentionDays: (config.audit?.retentionDays ?? 90),
+    dailyNoteRetentionDays: 30,
+    maxDbSizeMb: 500,
+    autoSchedule: false,
+  }, audit);
+
+  // Seed automatic prune cron job
+  seedPruneJob(scheduler);
+
+  // ── Tunnel Manager ──
+
+  const tunnelManager = new TunnelManager({
+    provider: config.tunnel?.provider ?? "none",
+    port: config.port,
+    token: config.tunnel?.token,
+    command: config.tunnel?.command,
+    args: config.tunnel?.args,
+    tunnelName: config.tunnel?.tunnelName,
+  });
+  if (config.tunnel?.provider && config.tunnel.provider !== "none") {
+    tunnelManager.start();
+  }
+
+  app.get("/api/tunnel", (c) => {
+    return c.json(tunnelManager.status);
+  });
+
+  // ── Multi-Agent System ──
+
+  const delegations = new DelegationManager(config.claude.model, config.claude.permissionMode);
+  const swarm = new SwarmCoordinator(config.claude.model, config.claude.permissionMode);
+  const router = new MessageRouter();
+
+  app.post("/api/delegate", async (c) => {
+    const { parent, child, prompt: delegatePrompt } = await c.req.json() as any;
+    if (!child || !delegatePrompt) return c.json({ error: "child and prompt required" }, 400);
+    const delegation = delegations.delegate(parent || "main", child, delegatePrompt);
+    return c.json({ delegation });
+  });
+
+  app.get("/api/delegations", (c) => {
+    return c.json({ active: delegations.listActive() });
+  });
+
+  app.delete("/api/delegations/:id", (c) => {
+    if (!delegations.cancel(c.req.param("id"))) return c.json({ error: "not_found" }, 404);
+    return c.json({ status: "ok" });
+  });
+
+  app.post("/api/swarm", async (c) => {
+    const { tasks, strategy } = await c.req.json() as { tasks: { agent: string; prompt: string }[]; strategy?: string };
+    if (!tasks?.length) return c.json({ error: "tasks required" }, 400);
+    const results = await swarm.execute(tasks, (strategy as any) || "parallel");
+    return c.json({ results });
+  });
+
+  app.get("/api/routing/rules", (c) => {
+    return c.json({ rules: router.listRules() });
+  });
+
+  app.post("/api/routing/rules", async (c) => {
+    const { pattern, channel: routeChannel, agent, priority } = await c.req.json() as any;
+    if (!pattern || !agent) return c.json({ error: "pattern and agent required" }, 400);
+    const rule = router.addRule({ pattern, channel: routeChannel, agent, priority: priority ?? 100 });
+    return c.json({ rule });
+  });
+
+  app.delete("/api/routing/rules/:id", (c) => {
+    if (!router.removeRule(c.req.param("id"))) return c.json({ error: "not_found" }, 404);
+    return c.json({ status: "ok" });
+  });
+
+  // ── Media Tools ──
+
+  app.post("/api/vision", async (c) => {
+    try {
+      const body = await c.req.json() as any;
+      const result = await analyzeImage(body);
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: String(err) }, 400);
+    }
+  });
+
+  app.post("/api/image/generate", async (c) => {
+    try {
+      const body = await c.req.json() as any;
+      const result = await generateImage(body);
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: String(err) }, 400);
+    }
+  });
+
   // ── Static SPA ──
 
   app.use("/assets/*", serveStatic({ root: "/app/web/dist" }));
   app.get("*", serveStatic({ root: "/app/web/dist", path: "index.html" }));
 
-  return { app, claude, sessionDb, sessionIndexer, reviewer, scheduler, rateLimiter, estop, audit };
+  return { app, claude, sessionDb, sessionIndexer, reviewer, scheduler, rateLimiter, estop, audit, costTracker, channelHealth, hooks, knowledgeGraph, tunnelManager, router };
 }
 
 // ── Helpers ──

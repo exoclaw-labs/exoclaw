@@ -6,7 +6,7 @@
  * Env: TELEGRAM_BOT_TOKEN
  */
 
-import type { Claude } from "../claude.js";
+import type { Claude } from "../claude-sdk.js";
 
 let API = "";
 
@@ -54,18 +54,25 @@ async function handleMessage(msg: any, claude: Claude): Promise<void> {
   if (!prompt || prompt.startsWith("/start")) return;
 
   try {
-    await fetch(`${API}/sendChatAction`, {
+    // Send typing indicator and refresh every 4s (Telegram typing lasts 5s)
+    const sendTyping = () => fetch(`${API}/sendChatAction`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-    });
+    }).catch(() => {});
+    await sendTyping();
+    const typingInterval = setInterval(sendTyping, 4000);
 
     // Collect response from structured JSONL stream
     const chunks: string[] = [];
     let doneText = "";
-    for await (const ev of claude.send(prompt)) {
-      if (ev.type === "chunk") chunks.push(ev.content);
-      if (ev.type === "done") doneText = ev.content;
+    try {
+      for await (const ev of claude.send(prompt)) {
+        if (ev.type === "chunk") chunks.push(ev.content);
+        if (ev.type === "done") doneText = ev.content;
+      }
+    } finally {
+      clearInterval(typingInterval);
     }
     let response = doneText || chunks.join("");
 

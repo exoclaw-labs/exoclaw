@@ -32,16 +32,30 @@ if (channels.slack?.appToken && !process.env.SLACK_APP_TOKEN) {
   process.env.SLACK_APP_TOKEN = channels.slack.appToken;
 }
 
-const { app, claude, sessionDb, sessionIndexer, scheduler, rateLimiter, estop } = createApp(config);
+const { app, claude, sessionDb, sessionIndexer, scheduler, rateLimiter, estop, channelHealth } = createApp(config);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
   log(`"${config.name}" listening on http://${info.address}:${info.port}`);
 });
 
-if (channels.discord?.enabled) startDiscord(claude);
-if (channels.telegram?.enabled) startTelegram(claude);
-if (channels.websocket?.enabled) setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
+if (channels.discord?.enabled) {
+  channelHealth.register("discord");
+  startDiscord(claude);
+  channelHealth.reportConnected("discord");
+}
+if (channels.telegram?.enabled) {
+  channelHealth.register("telegram");
+  startTelegram(claude);
+  channelHealth.reportConnected("telegram");
+}
+if (channels.websocket?.enabled) {
+  channelHealth.register("websocket");
+  setupWebSocket(server as unknown as Server, claude, config.apiToken, estop);
+  channelHealth.reportConnected("websocket");
+}
+channelHealth.register("terminal");
 setupTerminal(server as unknown as Server, config.apiToken);
+channelHealth.reportConnected("terminal");
 
 const shutdown = () => {
   log("Shutting down");
@@ -54,6 +68,7 @@ const shutdown = () => {
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+process.on("exit", () => { try { claude.close(); } catch { /* best effort */ } });
 
 function log(msg: string): void {
   const ts = new Date().toISOString();

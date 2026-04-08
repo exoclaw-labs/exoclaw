@@ -22,7 +22,7 @@
 
 import { type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import type { Claude } from "../claude.js";
+import type { Claude } from "../claude-sdk.js";
 import { scanForLeaks } from "../content-scanner.js";
 import type { Estop } from "../estop.js";
 

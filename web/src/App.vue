@@ -59,7 +59,6 @@ function setTheme(id: string) {
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: "bi-speedometer2" },
   { to: "/chat", label: "Chat", icon: "bi-chat-dots" },
-  { to: "/code", label: "Code", icon: "bi-braces" },
   { to: "/terminal", label: "Terminal", icon: "bi-terminal" },
 ];
 
@@ -187,7 +186,11 @@ const isConfigPage = computed(() => route.path.startsWith("/config"));
       </nav>
 
       <main class="flex-grow-1 overflow-auto">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <keep-alive>
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </main>
     </div>
   </div>

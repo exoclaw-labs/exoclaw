@@ -15,7 +15,7 @@
  * access to its tools, skills, and workspace context.
  */
 
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { join } from "path";
 import Database from "better-sqlite3";
 
@@ -238,6 +238,16 @@ class CronStore {
 
 // ── Cron Scheduler ──
 
+/** Tracks a running cron process for status inspection and kill support. */
+interface RunningProcess {
+  jobId: string;
+  runId: number;
+  proc: ChildProcess;
+  stdout: string;
+  stderr: string;
+  startedAt: string;
+}
+
 export class CronScheduler {
   private store: CronStore;
   private config: CronConfig;
@@ -245,6 +255,7 @@ export class CronScheduler {
   private permissionMode: string;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private running = new Set<string>();
+  private processes = new Map<string, RunningProcess>();
   private listeners: CronListener[] = [];
   private parsedSchedules = new Map<string, ReturnType<typeof parseCronExpression>>();
   /** Hook to resolve command sentinels (e.g., DREAMING_CONSOLIDATION). */
@@ -320,13 +331,13 @@ export class CronScheduler {
 
       switch (job.job_type) {
         case "prompt":
-          ({ result, status } = await this.executePrompt(job));
+          ({ result, status } = await this.executePrompt(job, runId));
           break;
         case "shell":
-          ({ result, status } = await this.executeShell(job));
+          ({ result, status } = await this.executeShell(job, runId));
           break;
         case "agent":
-          ({ result, status } = await this.executeAgent(job));
+          ({ result, status } = await this.executeAgent(job, runId));
           break;
         default:
           result = `Unknown job type: ${job.job_type}`;
@@ -354,7 +365,7 @@ export class CronScheduler {
   }
 
   /** Execute a prompt job via claude -p */
-  private executePrompt(job: CronJob): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
+  private executePrompt(job: CronJob, runId?: number): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
     // Resolve command sentinels (e.g., dreaming prompt built dynamically)
     let command = job.command;
     if (this.commandResolver) {
@@ -382,34 +393,54 @@ export class CronScheduler {
       });
       proc.stdin!.end();
 
-      let stdout = "";
-      let stderr = "";
-      proc.stdout!.on("data", (d: Buffer) => { stdout += d.toString(); });
-      proc.stderr!.on("data", (d: Buffer) => { stderr += d.toString(); });
+      // Register in process registry
+      const rp: RunningProcess = {
+        jobId: job.id,
+        runId: runId ?? 0,
+        proc,
+        stdout: "",
+        stderr: "",
+        startedAt: new Date().toISOString(),
+      };
+      this.processes.set(job.id, rp);
+
+      proc.stdout!.on("data", (d: Buffer) => {
+        const chunk = d.toString();
+        rp.stdout += chunk;
+        // Cap buffered output at 50KB
+        if (rp.stdout.length > 50_000) rp.stdout = rp.stdout.slice(-50_000);
+      });
+      proc.stderr!.on("data", (d: Buffer) => {
+        rp.stderr += d.toString();
+        if (rp.stderr.length > 10_000) rp.stderr = rp.stderr.slice(-10_000);
+      });
 
       const timeout = setTimeout(() => {
         proc.kill("SIGTERM");
+        this.processes.delete(job.id);
         resolve({ result: "Job timed out", status: "timeout" });
       }, this.config.defaultTimeoutMs);
 
       proc.on("exit", (code) => {
         clearTimeout(timeout);
+        this.processes.delete(job.id);
         if (code === 0 || code === null) {
-          resolve({ result: stdout.slice(0, 5000), status: "success" });
+          resolve({ result: rp.stdout.slice(0, 5000), status: "success" });
         } else {
-          resolve({ result: (stderr || stdout).slice(0, 5000), status: "error" });
+          resolve({ result: (rp.stderr || rp.stdout).slice(0, 5000), status: "error" });
         }
       });
 
       proc.on("error", (err) => {
         clearTimeout(timeout);
+        this.processes.delete(job.id);
         resolve({ result: String(err), status: "error" });
       });
     });
   }
 
   /** Execute a shell job */
-  private executeShell(job: CronJob): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
+  private executeShell(job: CronJob, runId?: number): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
     return new Promise((resolve) => {
       const proc = spawn("sh", ["-c", job.command], {
         stdio: ["pipe", "pipe", "pipe"],
@@ -419,33 +450,51 @@ export class CronScheduler {
       });
       proc.stdin!.end();
 
-      let stdout = "";
-      let stderr = "";
-      proc.stdout!.on("data", (d: Buffer) => { stdout += d.toString(); });
-      proc.stderr!.on("data", (d: Buffer) => { stderr += d.toString(); });
+      // Register in process registry
+      const rp: RunningProcess = {
+        jobId: job.id,
+        runId: runId ?? 0,
+        proc,
+        stdout: "",
+        stderr: "",
+        startedAt: new Date().toISOString(),
+      };
+      this.processes.set(job.id, rp);
+
+      proc.stdout!.on("data", (d: Buffer) => {
+        const chunk = d.toString();
+        rp.stdout += chunk;
+        if (rp.stdout.length > 50_000) rp.stdout = rp.stdout.slice(-50_000);
+      });
+      proc.stderr!.on("data", (d: Buffer) => {
+        rp.stderr += d.toString();
+        if (rp.stderr.length > 10_000) rp.stderr = rp.stderr.slice(-10_000);
+      });
 
       proc.on("exit", (code) => {
+        this.processes.delete(job.id);
         if (code === 0 || code === null) {
-          resolve({ result: stdout.slice(0, 5000), status: "success" });
+          resolve({ result: rp.stdout.slice(0, 5000), status: "success" });
         } else {
-          resolve({ result: (stderr || stdout).slice(0, 5000), status: "error" });
+          resolve({ result: (rp.stderr || rp.stdout).slice(0, 5000), status: "error" });
         }
       });
 
       proc.on("error", (err) => {
+        this.processes.delete(job.id);
         resolve({ result: String(err), status: "error" });
       });
     });
   }
 
   /** Execute an agent job — delegates to a named Claude Code agent */
-  private executeAgent(job: CronJob): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
+  private executeAgent(job: CronJob, runId?: number): Promise<{ result: string; status: "success" | "error" | "timeout" }> {
     // Agent jobs are prompt jobs that specify an agent name in the command
     // Format: "agent-name: prompt text"
     const colonIdx = job.command.indexOf(":");
     const agentPrompt = colonIdx > 0 ? job.command.slice(colonIdx + 1).trim() : job.command;
 
-    return this.executePrompt({ ...job, command: agentPrompt });
+    return this.executePrompt({ ...job, command: agentPrompt }, runId);
   }
 
   // ── Public API for HTTP endpoints ──
@@ -496,6 +545,43 @@ export class CronScheduler {
     if (!job || this.running.has(id)) return false;
     this.executeJob(job);
     return true;
+  }
+
+  /** Get the status and partial output of a running job. */
+  getRunningStatus(jobId: string): { running: boolean; stdout: string; stderr: string; startedAt: string; elapsedMs: number } | null {
+    const rp = this.processes.get(jobId);
+    if (!rp) return null;
+    return {
+      running: true,
+      stdout: rp.stdout.slice(-5000),
+      stderr: rp.stderr.slice(-2000),
+      startedAt: rp.startedAt,
+      elapsedMs: Date.now() - new Date(rp.startedAt).getTime(),
+    };
+  }
+
+  /** Kill a running job process. Returns true if a process was killed. */
+  killJob(jobId: string): boolean {
+    const rp = this.processes.get(jobId);
+    if (!rp) return false;
+    try {
+      rp.proc.kill("SIGTERM");
+      log("info", `Killed running job: ${jobId}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** List all currently running jobs with their status. */
+  listRunning(): { jobId: string; runId: number; startedAt: string; elapsedMs: number; outputSize: number }[] {
+    return Array.from(this.processes.entries()).map(([jobId, rp]) => ({
+      jobId,
+      runId: rp.runId,
+      startedAt: rp.startedAt,
+      elapsedMs: Date.now() - new Date(rp.startedAt).getTime(),
+      outputSize: rp.stdout.length,
+    }));
   }
 }
 
