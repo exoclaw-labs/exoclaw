@@ -64,6 +64,7 @@ const nav = [
 
 const configSections = [
   { to: "/config", label: "Setup", icon: "bi-key" },
+  { to: "/config/gateway", label: "Gateway", icon: "bi-hdd-network" },
   { to: "/config/agents", label: "Agents", icon: "bi-robot" },
   { to: "/config/channels", label: "Channels", icon: "bi-broadcast" },
   { to: "/config/skills", label: "Skills", icon: "bi-lightning" },

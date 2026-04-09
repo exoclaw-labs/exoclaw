@@ -88,6 +88,14 @@ export const QueueConfigSchema = z.object({
   maxWaitMs: z.number().positive().optional(),
 }).passthrough();
 
+export const TunnelConfigSchema = z.object({
+  provider: z.enum(["none", "tailscale", "cloudflare", "ngrok", "custom"]).optional(),
+  token: z.string().optional(),
+  tunnelName: z.string().optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+}).passthrough();
+
 export const GatewayConfigSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().positive(),
@@ -108,6 +116,7 @@ export const GatewayConfigSchema = z.object({
   embeddings: EmbeddingsConfigSchema.optional(),
   budget: BudgetConfigSchema.optional(),
   queue: QueueConfigSchema.optional(),
+  tunnel: TunnelConfigSchema.optional(),
 }).passthrough();
 
 /** Inferred TypeScript type from the gateway config schema. */

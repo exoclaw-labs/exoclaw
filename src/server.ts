@@ -1691,6 +1691,19 @@ export function createApp(config: GatewayConfig) {
     return c.json(tunnelManager.status);
   });
 
+  app.post("/api/tunnel/restart", (c) => {
+    tunnelManager.restart({
+      provider: config.tunnel?.provider ?? "none",
+      port: config.port,
+      token: config.tunnel?.token,
+      command: config.tunnel?.command,
+      args: config.tunnel?.args,
+      tunnelName: config.tunnel?.tunnelName,
+    });
+    audit.log({ event_type: "config_change", detail: `Tunnel restarted (provider: ${config.tunnel?.provider ?? "none"})`, source: "api" });
+    return c.json({ status: "ok" });
+  });
+
   // ── Multi-Agent System ──
 
   const delegations = new DelegationManager(config.claude.model, config.claude.permissionMode);

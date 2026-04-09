@@ -221,6 +221,27 @@ const jsonDescriptions: Record<string, string> = {
   "settings.local.json": "Claude Code project-level settings override (workspace/.claude/).",
   "config.json": "ExoClaw gateway configuration (the full config that drives everything).",
 };
+// ── Tunnel status ──
+const tunnelStatus = ref<{ provider: string; running: boolean; publicUrl: string | null; error: string | null; startedAt: string | null }>({
+  provider: "none", running: false, publicUrl: null, error: null, startedAt: null,
+});
+const tunnelRestarting = ref(false);
+
+async function loadTunnelStatus() {
+  try { tunnelStatus.value = await (await fetch("/api/tunnel")).json(); } catch {}
+}
+
+async function restartTunnel() {
+  tunnelRestarting.value = true;
+  try {
+    await saveConfig(config.value);
+    await fetch("/api/tunnel/restart", { method: "POST" });
+    await new Promise(r => setTimeout(r, 2000));
+    await loadTunnelStatus();
+  } catch {}
+  tunnelRestarting.value = false;
+}
+
 const msg = ref<{ type: string; text: string } | null>(null);
 const loading = ref(true);
 
@@ -252,6 +273,7 @@ async function load() {
     jsonText.value = JSON.stringify(cfg, null, 2);
     await loadSkills();
     await loadSubAgents();
+    loadTunnelStatus();
   } catch (e) {
     msg.value = { type: "danger", text: `Load failed: ${e}` };
   }
@@ -364,6 +386,137 @@ onMounted(load);
           <button class="btn btn-sm btn-outline-secondary" @click="rerunSetup">
             <i class="bi bi-arrow-repeat me-1"></i>Re-run Setup Wizard
           </button>
+        </div>
+      </div>
+
+      <!-- Gateway -->
+      <div v-if="section === 'gateway'">
+        <!-- General settings card -->
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-hdd-network me-1"></i> General</div>
+          <div class="card-body">
+            <div class="row g-3 mb-3">
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">Name</label>
+                <input v-model="config.name" class="form-control form-control-sm font-monospace" />
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">Port</label>
+                <input v-model.number="config.port" type="number" class="form-control form-control-sm font-monospace" />
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">API Token</label>
+                <input v-model="config.apiToken" type="password" class="form-control form-control-sm font-monospace" placeholder="Leave empty for no auth" />
+              </div>
+            </div>
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">Model</label>
+                <select v-model="config.claude.model" class="form-select form-select-sm font-monospace">
+                  <option value="claude-opus-4-6">claude-opus-4-6</option>
+                  <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">Permission Mode</label>
+                <select v-model="config.claude.permissionMode" class="form-select form-select-sm">
+                  <option value="auto">auto</option>
+                  <option value="bypassPermissions">bypassPermissions</option>
+                  <option value="default">default</option>
+                  <option value="plan">plan</option>
+                  <option value="acceptEdits">acceptEdits</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-body-secondary">Thinking Level</label>
+                <select v-model="thinkingLevel" class="form-select form-select-sm">
+                  <option value="">Default</option>
+                  <option value="1024">Low (1k tokens)</option>
+                  <option value="4096">Medium (4k tokens)</option>
+                  <option value="16384">High (16k tokens)</option>
+                  <option value="32768">Max (32k tokens)</option>
+                </select>
+              </div>
+            </div>
+            <div class="mt-3">
+              <div class="form-check form-switch">
+                <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc-gw">
+                <label class="form-check-label small text-body-secondary" for="rc-gw">Remote Control (claude.ai/code)</label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tunnel card -->
+        <div class="card mb-3">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-globe me-1"></i> Tunnel</span>
+            <span v-if="tunnelStatus.running" class="badge text-bg-success">Connected</span>
+            <span v-else-if="tunnelStatus.provider !== 'none'" class="badge text-bg-secondary">Stopped</span>
+            <span v-else class="badge text-bg-secondary">Disabled</span>
+          </div>
+          <div class="card-body">
+            <!-- Status banner -->
+            <div v-if="tunnelStatus.running && tunnelStatus.publicUrl" class="alert alert-success py-2 px-3 d-flex align-items-center gap-2 mb-3">
+              <i class="bi bi-link-45deg"></i>
+              <a :href="tunnelStatus.publicUrl" target="_blank" class="font-monospace small">{{ tunnelStatus.publicUrl }}</a>
+            </div>
+            <div v-if="tunnelStatus.error" class="alert alert-danger py-2 px-3 mb-3">
+              <i class="bi bi-exclamation-triangle me-1"></i>{{ tunnelStatus.error }}
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label small text-body-secondary">Provider</label>
+                <select v-model="(config.tunnel ??= {}).provider" class="form-select form-select-sm">
+                  <option value="none">None (disabled)</option>
+                  <option value="tailscale">Tailscale Funnel</option>
+                  <option value="cloudflare">Cloudflare Tunnel</option>
+                  <option value="ngrok">ngrok</option>
+                  <option value="custom">Custom command</option>
+                </select>
+              </div>
+              <div class="col-md-6" v-if="config.tunnel?.provider === 'cloudflare'">
+                <label class="form-label small text-body-secondary">Tunnel Name</label>
+                <input v-model="config.tunnel.tunnelName" class="form-control form-control-sm font-monospace" placeholder="my-tunnel" />
+              </div>
+            </div>
+
+            <!-- Token (cloudflare, ngrok) -->
+            <div v-if="config.tunnel?.provider === 'cloudflare' || config.tunnel?.provider === 'ngrok'" class="mb-3">
+              <label class="form-label small text-body-secondary">Auth Token</label>
+              <input v-model="config.tunnel.token" type="password" class="form-control form-control-sm font-monospace" placeholder="Token for the provider" />
+            </div>
+
+            <!-- Custom command -->
+            <div v-if="config.tunnel?.provider === 'custom'" class="mb-3">
+              <label class="form-label small text-body-secondary">Command</label>
+              <input v-model="config.tunnel.command" class="form-control form-control-sm font-monospace" placeholder="e.g. bore" />
+              <label class="form-label small text-body-secondary mt-2">Arguments (comma-separated)</label>
+              <input :value="(config.tunnel.args || []).join(', ')"
+                @input="(e: any) => config.tunnel.args = e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean)"
+                class="form-control form-control-sm font-monospace" placeholder="local, 3000, --to, bore.pub" />
+            </div>
+
+            <!-- Tailscale info -->
+            <div v-if="config.tunnel?.provider === 'tailscale'" class="text-body-secondary small mb-3">
+              <i class="bi bi-info-circle me-1"></i>
+              Tailscale Funnel exposes port {{ config.port || 3000 }} to the internet via your tailnet. Make sure <code>tailscale</code> is installed and authenticated in the container.
+            </div>
+
+            <!-- Apply button -->
+            <button
+              v-if="config.tunnel?.provider && config.tunnel?.provider !== 'none'"
+              class="btn btn-sm btn-outline-primary"
+              :disabled="tunnelRestarting"
+              @click="restartTunnel"
+            >
+              <span v-if="tunnelRestarting" class="spinner-border spinner-border-sm me-1"></span>
+              <i v-else class="bi bi-arrow-clockwise me-1"></i>
+              {{ tunnelRestarting ? 'Restarting...' : 'Save & Restart Tunnel' }}
+            </button>
+          </div>
         </div>
       </div>
 

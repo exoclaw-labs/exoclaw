@@ -123,6 +123,17 @@ export class TunnelManager {
 
   get publicUrl(): string | null { return this._publicUrl; }
 
+  /** Update config and restart the tunnel. */
+  restart(newConfig: TunnelConfig): void {
+    this.stop();
+    this.config = newConfig;
+    this._error = null;
+    this._publicUrl = null;
+    if (newConfig.provider !== "none") {
+      this.start();
+    }
+  }
+
   private buildCommand(): { command: string; args: string[] } {
     const port = this.config.port;
 
