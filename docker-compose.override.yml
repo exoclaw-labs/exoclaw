@@ -39,6 +39,10 @@ x-claude-env: &claude-env
   CLAUDE_MD_PATH: ${CLAUDE_MD_PATH:-}
   CLAUDE_FILES: ${CLAUDE_FILES:-}
 
+  # ── Sandbox & security ────────────────────────────────────────────────────
+  CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: ${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-true}
+  CLAUDE_CODE_SCRIPT_CAPS: ${CLAUDE_CODE_SCRIPT_CAPS:-}
+
   # ── Debug logging (opt-in) ────────────────────────────────────────────────
   CLAUDE_CODE_DEBUG_LOG_LEVEL: ${CLAUDE_CODE_DEBUG_LOG_LEVEL:-info}
 

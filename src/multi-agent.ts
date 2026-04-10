@@ -93,7 +93,7 @@ export class DelegationManager {
 
     const proc = spawn("claude", args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env: { ...process.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", CLAUDE_CODE_DISABLE_CRON: "1" },
       cwd: join(process.env.HOME || "/home/agent", "workspace"),
     });
     proc.stdin!.end();
@@ -222,7 +222,7 @@ export class SwarmCoordinator {
         task.prompt,
       ], {
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
+        env: { ...process.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", CLAUDE_CODE_DISABLE_CRON: "1" },
         cwd: join(process.env.HOME || "/home/agent", "workspace"),
       });
       proc.stdin!.end();

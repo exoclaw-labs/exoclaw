@@ -388,7 +388,7 @@ export class CronScheduler {
 
       const proc = spawn("claude", args, {
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
+        env: { ...process.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", CLAUDE_CODE_DISABLE_CRON: "1" },
         cwd: join(process.env.HOME || "/tmp", "workspace"),
       });
       proc.stdin!.end();
