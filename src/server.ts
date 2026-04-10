@@ -193,7 +193,7 @@ export function createApp(config: GatewayConfig) {
       uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
       gateway_port: config.port,
       paired: true,
-      session: { alive: claude.alive, busy: claude.busy, io: "agent-sdk", remoteControlUrl: claude.remoteControlUrl },
+      session: { alive: claude.alive, busy: claude.busy, io: "agent-sdk", remoteControlUrl: claude.remoteControlUrl, remoteControlRunning: claude.remoteControlRunning },
     });
   });
 

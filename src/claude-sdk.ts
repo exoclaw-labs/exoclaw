@@ -233,8 +233,8 @@ export class Claude {
             }
             if (block.type === "tool_use") {
               yield {
-                type: "tool",
-                content: `${block.name}: ${JSON.stringify(block.input || {}).slice(0, 200)}`,
+                type: "tool_use",
+                content: JSON.stringify({ name: block.name, input: block.input || {} }),
               };
             }
             if (block.type === "thinking" && block.thinking) {
@@ -296,7 +296,7 @@ export class Claude {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === "tool_result" && typeof block.content === "string") {
-              yield { type: "tool", content: block.content.slice(0, 500) };
+              yield { type: "tool_result", content: block.content.slice(0, 500) };
             }
           }
         }
@@ -590,6 +590,7 @@ export class Claude {
   /** Always true — SDK provides clean structured I/O. */
   get usingChannel(): boolean { return true; }
   get remoteControlUrl(): string | null { return this._remoteControlUrl; }
+  get remoteControlRunning(): boolean { return this._remoteControlProc !== null; }
 
   get activeSessionId(): string | null {
     return this._sessionId;
@@ -597,7 +598,7 @@ export class Claude {
 
   /** Update the in-memory config (e.g. after API config save). */
   updateConfig(config: ClaudeConfig): void {
-    const rcWanted = config.remoteControl !== false;
+    const rcWanted = config.remoteControl === true;
     const rcRunning = this._remoteControlProc !== null;
 
     this.config = config;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from "vue";
 import { marked } from "marked";
-import { fetchConfig, saveConfig } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchStatus } from "../composables/useApi";
 
 // ── Message types ──
 interface ToolEntry {
@@ -196,6 +196,10 @@ function connect() {
         break;
       }
 
+      case "tool_result":
+        // Tool results are informational — skip (don't add to activity pane)
+        break;
+
       case "done":
         busy.value = false;
         trimScrollback();
@@ -309,13 +313,26 @@ async function updateThinkingLevel(value: string) {
 }
 
 // ── Remote control toggle ──
-const remoteControlEnabled = computed(() => config.value?.claude?.remoteControl !== false);
+const remoteControlRunning = ref(false);
+
+async function pollRemoteControlState() {
+  try {
+    const status = await fetchStatus();
+    remoteControlRunning.value = status?.session?.remoteControlRunning === true;
+  } catch {}
+}
+
+const remoteControlEnabled = computed(() => remoteControlRunning.value);
 
 async function toggleRemoteControl() {
   if (!config.value.claude) config.value.claude = {};
-  config.value.claude.remoteControl = !remoteControlEnabled.value;
+  config.value.claude.remoteControl = !remoteControlRunning.value;
   savingConfig.value = true;
-  try { await saveConfig(config.value); } catch {}
+  try {
+    await saveConfig(config.value);
+    // Poll after a short delay to let the process start/stop
+    setTimeout(pollRemoteControlState, 1500);
+  } catch {}
   savingConfig.value = false;
 }
 
@@ -500,6 +517,7 @@ onMounted(() => {
   connect();
   loadConfig();
   loadSkills();
+  pollRemoteControlState();
   window.addEventListener("keydown", onWindowKeydown);
   document.addEventListener("click", onDocClick);
 });
