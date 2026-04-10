@@ -314,6 +314,7 @@ async function updateThinkingLevel(value: string) {
 
 // ── Remote control toggle ──
 const remoteControlRunning = ref(false);
+const rcToggling = ref(false);
 
 async function pollRemoteControlState() {
   try {
@@ -322,17 +323,30 @@ async function pollRemoteControlState() {
   } catch {}
 }
 
+/** Poll until remote control state matches expected, or timeout. */
+async function waitForRcState(expected: boolean, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500));
+    await pollRemoteControlState();
+    if (remoteControlRunning.value === expected) return;
+  }
+}
+
 const remoteControlEnabled = computed(() => remoteControlRunning.value);
 
 async function toggleRemoteControl() {
+  if (rcToggling.value) return;
+  const desired = !remoteControlRunning.value;
   if (!config.value.claude) config.value.claude = {};
-  config.value.claude.remoteControl = !remoteControlRunning.value;
+  config.value.claude.remoteControl = desired;
+  rcToggling.value = true;
   savingConfig.value = true;
   try {
     await saveConfig(config.value);
-    // Poll after a short delay to let the process start/stop
-    setTimeout(pollRemoteControlState, 1500);
+    await waitForRcState(desired);
   } catch {}
+  rcToggling.value = false;
   savingConfig.value = false;
 }
 
@@ -633,13 +647,13 @@ onUnmounted(() => {
 
     <!-- Activity detail modal -->
     <Teleport to="body">
-      <div v-if="modalActivity" class="modal-backdrop" @click.self="closeModal">
+      <div v-if="modalActivity" class="activity-overlay" @click.self="closeModal">
         <div class="activity-modal">
-          <div class="modal-header-bar">
-            <span class="modal-title">Activity</span>
-            <button class="modal-close" @click="closeModal"><i class="bi bi-x-lg"></i></button>
+          <div class="activity-modal-header">
+            <span class="activity-modal-title">Activity</span>
+            <button class="activity-modal-close" @click="closeModal"><i class="bi bi-x-lg"></i></button>
           </div>
-          <div class="modal-body-scroll">
+          <div class="activity-modal-body">
             <template v-for="(t, ti) in modalActivity.tools" :key="ti">
               <!-- Thinking entry -->
               <div v-if="t.kind === 'thinking'" class="modal-entry">
@@ -741,12 +755,12 @@ onUnmounted(() => {
             </button>
             <div class="popup-divider"></div>
             <div class="popup-section-label">Controls</div>
-            <button class="popup-item" @click="toggleRemoteControl">
+            <button class="popup-item" :disabled="rcToggling" @click="toggleRemoteControl">
               <i class="bi bi-broadcast"></i>
               <span>Remote control</span>
-              <i class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
+              <span v-if="rcToggling" class="spinner-border spinner-border-sm ms-auto"></span>
+              <i v-else class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
             </button>
-            <div v-if="savingConfig" class="popup-footer">Saving...</div>
           </div>
         </div>
         <span class="mode-bar-info">Bypass permissions</span>
@@ -836,32 +850,32 @@ onUnmounted(() => {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* -- Activity detail modal -- */
-.modal-backdrop {
+.activity-overlay {
   position: fixed; inset: 0; z-index: 2000;
   background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
 }
 .activity-modal {
-  width: 90%; max-width: 700px; max-height: 80vh;
+  width: 90%; max-width: 700px; min-height: 120px; max-height: 80vh;
   background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
   border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
   display: flex; flex-direction: column; overflow: hidden;
 }
-.modal-header-bar {
+.activity-modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px; border-bottom: 1px solid var(--bs-border-color);
   background: var(--bs-tertiary-bg); flex-shrink: 0;
 }
-.modal-title { font-size: 13px; font-weight: 600; }
-.modal-close {
+.activity-modal-title { font-size: 13px; font-weight: 600; }
+.activity-modal-close {
   background: none; border: none; color: var(--bs-secondary-color);
   font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
 }
-.modal-close:hover { background: var(--bs-secondary-bg); }
-.modal-body-scroll {
+.activity-modal-close:hover { background: var(--bs-secondary-bg); }
+.activity-modal-body {
   overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column;
-  gap: 8px; flex: 1 1 0; min-height: 0;
+  gap: 8px; flex: 1 1 auto; min-height: 60px;
 }
-.modal-body-scroll pre { white-space: pre-wrap; word-break: break-word; max-height: none; }
+.activity-modal-body pre { white-space: pre-wrap; word-break: break-word; max-height: none; }
 
 /* Modal entries */
 .modal-entry {

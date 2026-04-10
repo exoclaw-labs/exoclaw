@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { fetchConfig, saveConfig, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgentFile, deleteSubAgent, deleteSubAgentFile } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchStatus, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgentFile, deleteSubAgent, deleteSubAgentFile } from "../composables/useApi";
 import Setup from "./Setup.vue";
 
 const route = useRoute();
@@ -127,8 +127,15 @@ function selectAgent(name: string) {
   }
 }
 
+const creatingAgent = ref(false);
+
 function onSelectAgentChange(e: Event) {
   selectAgent((e.target as HTMLSelectElement).value);
+}
+
+function cancelCreateAgent() {
+  creatingAgent.value = false;
+  newAgentName.value = "";
 }
 
 async function createSubAgent() {
@@ -137,6 +144,7 @@ async function createSubAgent() {
   await saveSubAgentFile(name, "META.md", `name: ${name}\ndescription: \nschedule: \nmodel: claude-sonnet-4-6\n`);
   await saveSubAgentFile(name, "CLAUDE.md", `# ${name}\n\nAgent instructions here...\n`);
   newAgentName.value = "";
+  creatingAgent.value = false;
   await loadSubAgents();
   selectAgent(name);
 }
@@ -280,6 +288,43 @@ async function load() {
   loading.value = false;
 }
 
+// ── Remote control state ──
+const rcRunning = ref(false);
+const rcToggling = ref(false);
+
+async function pollRcState() {
+  try {
+    const status = await fetchStatus();
+    rcRunning.value = status?.session?.remoteControlRunning === true;
+  } catch {}
+}
+
+async function waitForRcState(expected: boolean, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500));
+    await pollRcState();
+    if (rcRunning.value === expected) return;
+  }
+}
+
+async function toggleRemoteControl() {
+  if (rcToggling.value) return;
+  const desired = !rcRunning.value;
+  if (!config.value.claude) config.value.claude = {};
+  config.value.claude.remoteControl = desired;
+  rcToggling.value = true;
+  try {
+    await saveConfig(config.value);
+    await waitForRcState(desired);
+  } catch (e) {
+    msg.value = { type: "danger", text: `Remote control toggle failed: ${e}` };
+  }
+  // Sync checkbox with actual state
+  if (config.value.claude) config.value.claude.remoteControl = rcRunning.value;
+  rcToggling.value = false;
+}
+
 // ── Auto-save for gateway/general sections ──
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -357,7 +402,7 @@ async function rerunSetup() {
   }
 }
 
-onMounted(load);
+onMounted(() => { load(); pollRcState(); });
 </script>
 
 <template>
@@ -369,7 +414,7 @@ onMounted(load);
         <span class="text-body-secondary small">
           <i class="bi bi-shield-check me-1"></i>bypassPermissions
         </span>
-        <button v-if="section !== 'gateway' && section !== 'general'" class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
+        <button v-if="section !== 'gateway' && section !== 'general' && section !== 'agents'" class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
           <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
         </button>
         <span v-else-if="saving" class="text-body-secondary small"><span class="spinner-border spinner-border-sm me-1"></span>Saving...</span>
@@ -439,9 +484,11 @@ onMounted(load);
               </div>
             </div>
             <div class="mt-3">
-              <div class="form-check form-switch">
-                <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc-gw" @change="autoSave">
+              <div class="form-check form-switch d-flex align-items-center gap-2">
+                <input :checked="rcRunning" class="form-check-input" type="checkbox" id="rc-gw" :disabled="rcToggling" @change="toggleRemoteControl">
                 <label class="form-check-label small text-body-secondary" for="rc-gw">Remote Control (claude.ai/code)</label>
+                <span v-if="rcToggling" class="spinner-border spinner-border-sm text-body-secondary"></span>
+                <span v-else-if="rcRunning" class="badge text-bg-success">Running</span>
               </div>
             </div>
           </div>
@@ -551,9 +598,11 @@ onMounted(load);
             </div>
           </div>
           <div class="mb-3">
-            <div class="form-check form-switch">
-              <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc" @change="autoSave">
+            <div class="form-check form-switch d-flex align-items-center gap-2">
+              <input :checked="rcRunning" class="form-check-input" type="checkbox" id="rc" :disabled="rcToggling" @change="toggleRemoteControl">
               <label class="form-check-label small text-body-secondary" for="rc">Remote Control (claude.ai/code)</label>
+              <span v-if="rcToggling" class="spinner-border spinner-border-sm text-body-secondary"></span>
+              <span v-else-if="rcRunning" class="badge text-bg-success">Running</span>
             </div>
           </div>
           <hr>
@@ -751,33 +800,43 @@ onMounted(load);
         <template v-else>
           <!-- Agent selector bar — centered -->
           <div class="d-flex justify-content-center align-items-center gap-2 mb-3">
-            <select
-              :value="selectedAgent"
-              @change="onSelectAgentChange"
-              class="form-select form-select-sm"
-              style="max-width: 240px"
-            >
-              <option value="__main__">Main Agent</option>
-              <option v-for="a in subAgents" :key="a.name" :value="a.name">{{ a.name }}</option>
-            </select>
-            <form @submit.prevent="createSubAgent" class="input-group input-group-sm" style="max-width: 200px">
-              <input v-model="newAgentName" class="form-control" placeholder="new-agent" />
-              <button class="btn btn-outline-primary" type="submit" :disabled="!newAgentName.trim()" title="Create agent">
-                <i class="bi bi-plus"></i>
+            <template v-if="creatingAgent">
+              <form @submit.prevent="createSubAgent" class="input-group input-group-sm" style="max-width: 280px">
+                <input v-model="newAgentName" class="form-control" placeholder="agent-name" autofocus />
+                <button class="btn btn-outline-primary" type="submit" :disabled="!newAgentName.trim()" title="Create agent">
+                  <i class="bi bi-check-lg"></i>
+                </button>
+                <button class="btn btn-outline-secondary" type="button" @click="cancelCreateAgent" title="Cancel">
+                  <i class="bi bi-x-lg"></i>
+                </button>
+              </form>
+            </template>
+            <template v-else>
+              <select
+                :value="selectedAgent"
+                @change="onSelectAgentChange"
+                class="form-select form-select-sm"
+                style="max-width: 240px"
+              >
+                <option value="__main__">Main Agent</option>
+                <option v-for="a in subAgents" :key="a.name" :value="a.name">{{ a.name }}</option>
+              </select>
+              <button class="btn btn-sm btn-outline-primary" @click="creatingAgent = true; newAgentName = ''" title="New Agent">
+                <i class="bi bi-plus-lg"></i>
               </button>
-            </form>
-            <button
-              v-if="selectedAgent !== '__main__'"
-              class="btn btn-sm btn-outline-danger"
-              @click="removeSubAgent(selectedAgent)"
-              title="Delete agent"
-            >
-              <i class="bi bi-trash"></i>
-            </button>
+              <button
+                v-if="selectedAgent !== '__main__'"
+                class="btn btn-sm btn-outline-danger"
+                @click="removeSubAgent(selectedAgent)"
+                title="Delete agent"
+              >
+                <i class="bi bi-trash"></i>
+              </button>
+            </template>
           </div>
 
           <!-- File tabs -->
-          <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="d-flex align-items-center mb-2">
             <ul class="nav nav-tabs border-0 gap-1 flex-wrap">
               <li v-for="f in visibleTabs" :key="f" class="nav-item">
                 <button
@@ -795,26 +854,24 @@ onMounted(load);
                   >&times;</span>
                 </button>
               </li>
-            </ul>
-            <div class="d-flex gap-2 ms-2 flex-shrink-0">
-              <div class="dropdown" v-if="addableFiles.length">
-                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+              <li v-if="addableFiles.length" class="nav-item dropdown">
+                <button class="nav-link small py-1 px-2 text-body-secondary" data-bs-toggle="dropdown" title="Add file">
                   <i class="bi bi-plus"></i>
                 </button>
-                <ul class="dropdown-menu dropdown-menu-end">
+                <ul class="dropdown-menu">
                   <li v-for="f in addableFiles" :key="f">
                     <button class="dropdown-item small" @click="addFile(f)">{{ f }}</button>
                   </li>
                 </ul>
-              </div>
-              <button
-                v-if="selectedAgent === '__main__' && currentFile === 'CLAUDE.md'"
-                class="btn btn-sm btn-outline-primary"
-                @click="showPersonaWizard = true"
-              >
-                <i class="bi bi-magic me-1"></i>Persona Wizard
-              </button>
-            </div>
+              </li>
+            </ul>
+            <button
+              v-if="selectedAgent === '__main__' && currentFile === 'CLAUDE.md'"
+              class="btn btn-sm btn-outline-primary ms-auto flex-shrink-0"
+              @click="showPersonaWizard = true"
+            >
+              <i class="bi bi-magic me-1"></i>Persona Wizard
+            </button>
           </div>
 
           <!-- Editor card -->
@@ -835,9 +892,14 @@ onMounted(load);
               ></textarea>
             </div>
           </div>
-          <p v-if="selectedAgent === '__main__'" class="text-body-secondary small mt-2">
-            {{ mdDescriptions[currentFile] || 'Workspace file read by Claude on startup.' }}
-          </p>
+          <div class="d-flex align-items-center gap-2 mt-2">
+            <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
+              <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
+            </button>
+            <span v-if="selectedAgent === '__main__'" class="text-body-secondary small">
+              {{ mdDescriptions[currentFile] || 'Workspace file read by Claude on startup.' }}
+            </span>
+          </div>
         </template>
       </div>
 

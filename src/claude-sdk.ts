@@ -511,6 +511,11 @@ export class Claude {
   // ── Remote control (optional background process) ──
 
   private startRemoteControl(): void {
+    // Stop any existing process first
+    if (this._remoteControlProc) {
+      this.stopRemoteControl();
+    }
+
     const args = ["remote-control"];
     if (this.config.name) {
       args.push("--name", this.config.name);
@@ -542,6 +547,12 @@ export class Claude {
     proc.stdout?.on("data", parseOutput);
     proc.stderr?.on("data", parseOutput);
 
+    proc.on("error", (err) => {
+      log("error", `Remote control process failed to start: ${err}`);
+      this._remoteControlProc = null;
+      this._remoteControlUrl = null;
+    });
+
     proc.on("exit", (code) => {
       log("warn", `Remote control process exited with code ${code}`);
       this._remoteControlProc = null;
@@ -552,7 +563,13 @@ export class Claude {
   private stopRemoteControl(): void {
     if (this._remoteControlProc) {
       log("info", "Stopping remote control process");
-      try { this._remoteControlProc.kill(); } catch { /* intentional */ }
+      const proc = this._remoteControlProc;
+      try { proc.kill("SIGTERM"); } catch { /* intentional */ }
+      // Give SIGTERM 2s, then SIGKILL
+      const forceKill = setTimeout(() => {
+        try { if (!proc.killed) proc.kill("SIGKILL"); } catch { /* intentional */ }
+      }, 2000);
+      proc.on("exit", () => clearTimeout(forceKill));
       this._remoteControlProc = null;
       this._remoteControlUrl = null;
     }
