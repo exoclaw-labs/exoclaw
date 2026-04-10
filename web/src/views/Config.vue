@@ -263,8 +263,8 @@ async function load() {
   loading.value = true;
   try {
     const [cfg, files] = await Promise.all([fetchConfig(), fetchClaudeFiles()]);
-    // remoteControl defaults to true in the runtime (enabled unless explicitly false)
-    if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = true;
+    // remoteControl defaults to false (must be explicitly enabled)
+    if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = false;
     // Extract thinking budget
     const tb = cfg.claude?.thinkingBudget;
     thinkingLevel.value = tb !== undefined ? String(tb) : "";
@@ -278,6 +278,26 @@ async function load() {
     msg.value = { type: "danger", text: `Load failed: ${e}` };
   }
   loading.value = false;
+}
+
+// ── Auto-save for gateway/general sections ──
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function autoSave() {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(async () => {
+    saving.value = true;
+    try {
+      if (!config.value.claude) config.value.claude = {};
+      config.value.claude.thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
+      await saveConfig(config.value);
+      msg.value = { type: "success", text: "Saved." };
+      setTimeout(() => { if (msg.value?.text === "Saved.") msg.value = null; }, 2000);
+    } catch (e) {
+      msg.value = { type: "danger", text: `Save failed: ${e}` };
+    }
+    saving.value = false;
+  }, 400);
 }
 
 async function handleSave() {
@@ -311,7 +331,7 @@ async function handleSave() {
       await loadSubAgents();
     }
 
-    msg.value = { type: "success", text: "Saved. Restart container to apply session changes." };
+    msg.value = { type: "success", text: "Saved." };
   } catch (e) {
     msg.value = { type: "danger", text: `Save failed: ${e}` };
   }
@@ -349,9 +369,10 @@ onMounted(load);
         <span class="text-body-secondary small">
           <i class="bi bi-shield-check me-1"></i>bypassPermissions
         </span>
-        <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
+        <button v-if="section !== 'gateway' && section !== 'general'" class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
           <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
         </button>
+        <span v-else-if="saving" class="text-body-secondary small"><span class="spinner-border spinner-border-sm me-1"></span>Saving...</span>
       </div>
     </div>
 
@@ -382,21 +403,21 @@ onMounted(load);
             <div class="row g-3 mb-3">
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Name</label>
-                <input v-model="config.name" class="form-control form-control-sm font-monospace" />
+                <input v-model="config.name" class="form-control form-control-sm font-monospace" @change="autoSave" />
               </div>
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Port</label>
-                <input v-model.number="config.port" type="number" class="form-control form-control-sm font-monospace" />
+                <input v-model.number="config.port" type="number" class="form-control form-control-sm font-monospace" @change="autoSave" />
               </div>
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">API Token</label>
-                <input v-model="config.apiToken" type="password" class="form-control form-control-sm font-monospace" placeholder="Leave empty for no auth" />
+                <input v-model="config.apiToken" type="password" class="form-control form-control-sm font-monospace" placeholder="Leave empty for no auth" @change="autoSave" />
               </div>
             </div>
             <div class="row g-3">
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Model</label>
-                <select v-model="config.claude.model" class="form-select form-select-sm font-monospace">
+                <select v-model="config.claude.model" class="form-select form-select-sm font-monospace" @change="autoSave">
                   <option value="claude-opus-4-6">claude-opus-4-6</option>
                   <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                   <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -408,7 +429,7 @@ onMounted(load);
               </div>
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Thinking Level</label>
-                <select v-model="thinkingLevel" class="form-select form-select-sm">
+                <select v-model="thinkingLevel" class="form-select form-select-sm" @change="autoSave">
                   <option value="">Default</option>
                   <option value="1024">Low (1k tokens)</option>
                   <option value="4096">Medium (4k tokens)</option>
@@ -419,7 +440,7 @@ onMounted(load);
             </div>
             <div class="mt-3">
               <div class="form-check form-switch">
-                <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc-gw">
+                <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc-gw" @change="autoSave">
                 <label class="form-check-label small text-body-secondary" for="rc-gw">Remote Control (claude.ai/code)</label>
               </div>
             </div>
@@ -503,12 +524,12 @@ onMounted(load);
         <div class="card-body">
           <div class="mb-3">
             <label class="form-label small text-body-secondary">Name</label>
-            <input v-model="config.name" class="form-control form-control-sm font-monospace" />
+            <input v-model="config.name" class="form-control form-control-sm font-monospace" @change="autoSave" />
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-4">
               <label class="form-label small text-body-secondary">Model</label>
-              <select v-model="config.claude.model" class="form-select form-select-sm font-monospace">
+              <select v-model="config.claude.model" class="form-select form-select-sm font-monospace" @change="autoSave">
                 <option value="claude-opus-4-6">claude-opus-4-6</option>
                 <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                 <option value="claude-haiku-4-5">claude-haiku-4-5</option>
@@ -520,7 +541,7 @@ onMounted(load);
             </div>
             <div class="col-md-4">
               <label class="form-label small text-body-secondary">Thinking Level</label>
-              <select v-model="thinkingLevel" class="form-select form-select-sm">
+              <select v-model="thinkingLevel" class="form-select form-select-sm" @change="autoSave">
                 <option value="">Default</option>
                 <option value="1024">Low (1k tokens)</option>
                 <option value="4096">Medium (4k tokens)</option>
@@ -531,18 +552,18 @@ onMounted(load);
           </div>
           <div class="mb-3">
             <div class="form-check form-switch">
-              <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc">
+              <input v-model="config.claude.remoteControl" class="form-check-input" type="checkbox" id="rc" @change="autoSave">
               <label class="form-check-label small text-body-secondary" for="rc">Remote Control (claude.ai/code)</label>
             </div>
           </div>
           <hr>
           <div class="mb-3">
             <label class="form-label small text-body-secondary">Port</label>
-            <input v-model.number="config.port" type="number" class="form-control form-control-sm font-monospace" />
+            <input v-model.number="config.port" type="number" class="form-control form-control-sm font-monospace" @change="autoSave" />
           </div>
           <div class="mb-3">
             <label class="form-label small text-body-secondary">API Token (optional)</label>
-            <input v-model="config.apiToken" type="password" class="form-control form-control-sm font-monospace" placeholder="Leave empty for no auth" />
+            <input v-model="config.apiToken" type="password" class="form-control form-control-sm font-monospace" placeholder="Leave empty for no auth" @change="autoSave" />
           </div>
         </div>
       </div>
