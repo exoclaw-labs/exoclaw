@@ -318,15 +318,6 @@ async function handleSave() {
   saving.value = false;
 }
 
-const restarting = ref(false);
-
-async function restartSession() {
-  restarting.value = true;
-  try { await fetch("/api/session/restart", { method: "POST" }); } catch {}
-  await new Promise(r => setTimeout(r, 3000));
-  restarting.value = false;
-  msg.value = { type: "success", text: "Session restarted." };
-}
 
 function onClaudeFileEdit(name: string, content: string) {
   claudeFiles.value[name] = content;
@@ -358,16 +349,9 @@ onMounted(load);
         <span v-if="config.claude?.permissionMode" class="text-body-secondary small">
           <i class="bi bi-shield-check me-1"></i>{{ config.claude.permissionMode }}
         </span>
-        <div class="d-flex gap-2">
-          <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
-            <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
-          </button>
-          <button class="btn btn-outline-warning btn-sm" :disabled="restarting" @click="restartSession">
-            <span v-if="restarting" class="spinner-border spinner-border-sm me-1"></span>
-            <i v-else class="bi bi-arrow-clockwise me-1"></i>
-            {{ restarting ? 'Restarting...' : 'Restart' }}
-          </button>
-        </div>
+        <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
+          <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
+        </button>
       </div>
     </div>
 

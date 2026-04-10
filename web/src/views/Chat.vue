@@ -319,11 +319,6 @@ async function toggleRemoteControl() {
   savingConfig.value = false;
 }
 
-async function restartSession() {
-  closeAllPopups();
-  try { await fetch("/api/session/restart", { method: "POST" }); } catch {}
-}
-
 async function freshSession() {
   closeAllPopups();
   messages.value = [];
@@ -732,10 +727,6 @@ onUnmounted(() => {
               <i class="bi bi-broadcast"></i>
               <span>Remote control</span>
               <i class="bi ms-auto" :class="remoteControlEnabled ? 'bi-toggle-on text-success' : 'bi-toggle-off'"></i>
-            </button>
-            <button class="popup-item" @click="restartSession">
-              <i class="bi bi-arrow-clockwise"></i>
-              <span>Restart session</span>
             </button>
             <div v-if="savingConfig" class="popup-footer">Saving...</div>
           </div>
