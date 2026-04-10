@@ -346,8 +346,8 @@ onMounted(load);
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h6 class="mb-0">{{ section === 'overview' ? 'Configuration' : '' }}</h6>
       <div class="d-flex align-items-center gap-3">
-        <span v-if="config.claude?.permissionMode" class="text-body-secondary small">
-          <i class="bi bi-shield-check me-1"></i>{{ config.claude.permissionMode }}
+        <span class="text-body-secondary small">
+          <i class="bi bi-shield-check me-1"></i>bypassPermissions
         </span>
         <button class="btn btn-primary btn-sm" :disabled="saving" @click="handleSave">
           <i class="bi bi-save me-1"></i>{{ saving ? 'Saving...' : 'Save' }}
@@ -404,13 +404,7 @@ onMounted(load);
               </div>
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Permission Mode</label>
-                <select v-model="config.claude.permissionMode" class="form-select form-select-sm">
-                  <option value="auto">auto</option>
-                  <option value="bypassPermissions">bypassPermissions</option>
-                  <option value="default">default</option>
-                  <option value="plan">plan</option>
-                  <option value="acceptEdits">acceptEdits</option>
-                </select>
+                <input value="bypassPermissions" class="form-control form-control-sm font-monospace" disabled />
               </div>
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Thinking Level</label>
@@ -522,13 +516,7 @@ onMounted(load);
             </div>
             <div class="col-md-4">
               <label class="form-label small text-body-secondary">Permission Mode</label>
-              <select v-model="config.claude.permissionMode" class="form-select form-select-sm">
-                <option value="auto">auto</option>
-                <option value="bypassPermissions">bypassPermissions</option>
-                <option value="default">default</option>
-                <option value="plan">plan</option>
-                <option value="acceptEdits">acceptEdits</option>
-              </select>
+              <input value="bypassPermissions" class="form-control form-control-sm font-monospace" disabled />
             </div>
             <div class="col-md-4">
               <label class="form-label small text-body-secondary">Thinking Level</label>
