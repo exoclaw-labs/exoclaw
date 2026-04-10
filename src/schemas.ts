@@ -31,6 +31,7 @@ export const ClaudeConfigSchema = z.object({
   allowedTools: z.array(z.string()).optional(),
   disallowedTools: z.array(z.string()).optional(),
   thinkingBudget: z.number().int().min(0).optional(),
+  excludeDynamicSystemPromptSections: z.array(z.string()).optional(),
   extraFlags: z.array(z.string()).optional(),
   remoteControl: z.boolean().optional(),
 }).passthrough();

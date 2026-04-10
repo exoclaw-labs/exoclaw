@@ -65,6 +65,7 @@ export interface ClaudeConfig {
   allowedTools?: string[];
   disallowedTools?: string[];
   thinkingBudget?: number;
+  excludeDynamicSystemPromptSections?: string[];
   remoteControl?: boolean;
 }
 
@@ -401,6 +402,14 @@ export class Claude {
         ...options.extraArgs,
         "name": this.config.name,
         "remote-control-session-name-prefix": this.config.name,
+      };
+    }
+
+    // Exclude volatile system prompt sections to improve prompt cache hit rate
+    if (this.config.excludeDynamicSystemPromptSections?.length) {
+      options.extraArgs = {
+        ...options.extraArgs,
+        "exclude-dynamic-system-prompt-sections": this.config.excludeDynamicSystemPromptSections.join(","),
       };
     }
 
