@@ -19,7 +19,10 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
 import { exec, execSync } from "child_process";
-import { Claude, type ClaudeConfig } from "./claude-sdk.js";
+import { Claude, type ClaudeConfig, type McpServerDef } from "./claude-sdk.js";
+import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { handleSlackEvent, startSlack } from "./channels/slack.js";
 import { loadConfig, loadConfigMasked, saveConfig, saveConfigSafe } from "./config-store.js";
 import { SessionDB } from "./session-db.js";
@@ -116,6 +119,13 @@ export interface SelfImprovementConfig {
   insights?: { enabled?: boolean };
 }
 
+export interface PeerConfig {
+  url: string;
+  token?: string;
+  enabled?: boolean;
+  description?: string;
+}
+
 export interface GatewayConfig {
   name: string;
   port: number;
@@ -139,11 +149,27 @@ export interface GatewayConfig {
   budget?: Partial<BudgetConfig>;
   queue?: Partial<QueueConfig>;
   tunnel?: Partial<TunnelCfg>;
+  peers?: Record<string, PeerConfig>;
 }
 
 const startedAt = Date.now();
 
 export function createApp(config: GatewayConfig) {
+  // Translate peer gateways into http MCP servers so Claude sees them as native tools.
+  // Each peer becomes `mcp__peer-<name>__send_message` / `__get_status`.
+  // Done before `new Claude()` so writeMcpConfig picks them up for .mcp.json too.
+  if (config.peers) {
+    config.claude.mcpServers = config.claude.mcpServers || {};
+    for (const [peerName, peer] of Object.entries(config.peers)) {
+      if (peer.enabled === false) continue;
+      const key = `peer-${peerName}`;
+      const headers: Record<string, string> = {};
+      if (peer.token) headers["Authorization"] = `Bearer ${peer.token}`;
+      const def: McpServerDef = { type: "http", url: peer.url, headers };
+      config.claude.mcpServers[key] = def;
+    }
+  }
+
   const claude = new Claude(config.claude);
   claude.start();
 
@@ -159,7 +185,7 @@ export function createApp(config: GatewayConfig) {
     const token = config.apiToken;
     app.use("*", async (c, next) => {
       const p = c.req.path;
-      if (p === "/health" || p === "/openapi.json" || p.startsWith("/slack/") || p.startsWith("/assets/") || p.startsWith("/api/auth") || p.startsWith("/api/session") || p.startsWith("/api/setup") || !p.startsWith("/api") && !p.startsWith("/webhook")) {
+      if (p === "/health" || p === "/openapi.json" || p.startsWith("/slack/") || p.startsWith("/assets/") || p.startsWith("/api/auth") || p.startsWith("/api/session") || p.startsWith("/api/setup") || (!p.startsWith("/api") && !p.startsWith("/webhook") && !p.startsWith("/mcp"))) {
         return next();
       }
       const bearer = c.req.header("authorization")?.replace("Bearer ", "");
@@ -230,6 +256,130 @@ export function createApp(config: GatewayConfig) {
 
   app.get("/api/queue", (c) => {
     return c.json({ mode: messageQueue.mode, pending: messageQueue.pending });
+  });
+
+  // ── POST /mcp — peer gateway MCP-over-HTTP ──
+  //
+  // Lets another exoclaw container talk to this one as an MCP server.
+  // Tools:
+  //   send_message(text, wait_for_reply?) — routes through the same queue as /webhook,
+  //                                         so content scanning, budget, estop all apply.
+  //   get_status()                        — { name, alive, busy, model }
+  //
+  // Auth: reuses the gateway Bearer middleware above. Peers put this container's
+  // apiToken in an Authorization header (wired via config.peers[*].token).
+
+  const peerMcp = new McpServer(
+    { name: `exoclaw-peer-${config.name}`, version: "0.1.0" },
+    {
+      capabilities: { tools: {} },
+      instructions: `This is the peer interface for exoclaw gateway "${config.name}". Use send_message to deliver a message to its Claude session. Use get_status to check if the peer is alive and free.`,
+    },
+  );
+
+  peerMcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "send_message",
+        description: `Send a message to the "${config.name}" exoclaw gateway. By default the call returns immediately ("queued") and the peer will respond asynchronously by calling your own send_message in the reverse direction. Set wait_for_reply=true to block until the peer's Claude finishes a turn (times out after ~5 min; can deadlock if both peers wait on each other — avoid mutual wait_for_reply).`,
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            text: { type: "string", description: "The message text to deliver" },
+            wait_for_reply: {
+              type: "boolean",
+              description: "If true, wait for the peer's Claude to complete a turn and return its final text. Default false (fire-and-forget).",
+            },
+          },
+          required: ["text"],
+        },
+      },
+      {
+        name: "get_status",
+        description: `Return the current status of the "${config.name}" exoclaw gateway: whether its Claude session is alive, whether it's busy processing a turn, its model, and its name.`,
+        inputSchema: { type: "object" as const, properties: {} },
+      },
+    ],
+  }));
+
+  peerMcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (req.params.name === "send_message") {
+      const { text, wait_for_reply = false } = (req.params.arguments || {}) as {
+        text?: string;
+        wait_for_reply?: boolean;
+      };
+      if (!text) {
+        return { content: [{ type: "text" as const, text: "[error: text is required]" }] };
+      }
+      if (!claude.alive) {
+        return { content: [{ type: "text" as const, text: "[peer session not running]" }] };
+      }
+      if (estop.isActive) {
+        return { content: [{ type: "text" as const, text: `[peer estop active: ${estop.state.reason ?? "frozen"}]` }] };
+      }
+
+      const enriched = await enrichLinks(text).catch(() => text);
+
+      if (!wait_for_reply) {
+        // Fire-and-forget: let the peer respond by initiating its own send_message back.
+        void (async () => {
+          try {
+            await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
+          } catch (err) {
+            log("warn", `Peer message enqueue failed: ${err}`);
+          }
+        })();
+        return {
+          content: [{
+            type: "text" as const,
+            text: `[queued — ${config.name} will respond asynchronously]`,
+          }],
+        };
+      }
+
+      try {
+        const reply = await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
+        return { content: [{ type: "text" as const, text: reply }] };
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `[peer error: ${err}]` }] };
+      }
+    }
+
+    if (req.params.name === "get_status") {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            name: config.name,
+            model: config.claude.model,
+            alive: claude.alive,
+            busy: claude.busy,
+            estop: estop.isActive,
+            pending: messageQueue.pending,
+          }),
+        }],
+      };
+    }
+
+    return { content: [{ type: "text" as const, text: `Unknown tool: ${req.params.name}` }] };
+  });
+
+  const peerMcpTransport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless — each peer request is independent
+    enableJsonResponse: true,      // plain JSON responses, no SSE bookkeeping
+  });
+
+  peerMcp.connect(peerMcpTransport).catch((err) => {
+    log("error", `Peer MCP transport connect failed: ${err}`);
+  });
+
+  app.all("/mcp", async (c) => {
+    try {
+      return await peerMcpTransport.handleRequest(c.req.raw);
+    } catch (err) {
+      log("error", `Peer MCP handleRequest error: ${err}`);
+      return c.json({ error: "peer_mcp_error", detail: String(err) }, 500);
+    }
   });
 
   // ── GET /api/events (SSE) ──

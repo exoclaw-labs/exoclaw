@@ -96,6 +96,13 @@ export const TunnelConfigSchema = z.object({
   args: z.array(z.string()).optional(),
 }).passthrough();
 
+export const PeerSchema = z.object({
+  url: z.string().min(1),
+  token: z.string().optional(),
+  enabled: z.boolean().optional(),
+  description: z.string().optional(),
+}).passthrough();
+
 export const GatewayConfigSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().positive(),
@@ -117,6 +124,7 @@ export const GatewayConfigSchema = z.object({
   budget: BudgetConfigSchema.optional(),
   queue: QueueConfigSchema.optional(),
   tunnel: TunnelConfigSchema.optional(),
+  peers: z.record(PeerSchema).optional(),
 }).passthrough();
 
 /** Inferred TypeScript type from the gateway config schema. */

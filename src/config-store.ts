@@ -187,6 +187,13 @@ function maskSecrets(obj: Record<string, any>): Record<string, any> {
     }
   }
 
+  // Mask peer tokens
+  if (masked.peers) {
+    for (const peer of Object.values(masked.peers as Record<string, any>)) {
+      if (peer && peer.token) peer.token = MASK;
+    }
+  }
+
   // Mask MCP server env vars and headers that look like keys/tokens
   if (masked.claude?.mcpServers) {
     for (const srv of Object.values(masked.claude.mcpServers as Record<string, any>)) {
@@ -228,6 +235,15 @@ export function saveConfigSafe(incoming: Record<string, any>) {
           ch[key] = prev[key];
         }
       }
+    }
+  }
+
+  // Restore masked peer tokens
+  if (incoming.peers && existing.peers) {
+    for (const [name, peer] of Object.entries(incoming.peers as Record<string, any>)) {
+      const prev = (existing.peers as Record<string, any>)[name];
+      if (!prev) continue;
+      if (peer && peer.token === MASK && prev.token) peer.token = prev.token;
     }
   }
 
