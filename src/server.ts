@@ -758,7 +758,7 @@ export function createApp(config: GatewayConfig) {
     defaultTimeoutMs: config.cron?.defaultTimeoutMs ?? 3 * 60_000,
     catchUpOnStartup: config.cron?.catchUpOnStartup ?? false,
   };
-  const scheduler = new CronScheduler(sessionDb.db, cronConfig, config.claude.model, config.claude.permissionMode);
+  const scheduler = new CronScheduler(sessionDb, cronConfig, config.claude.model, config.claude.permissionMode);
 
   scheduler.onJobComplete((job, run) => {
     audit.log({

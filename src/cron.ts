@@ -18,6 +18,8 @@
 import { spawn, type ChildProcess } from "child_process";
 import { join } from "path";
 import Database from "better-sqlite3";
+import { SessionDB } from "./session-db.js";
+import { PROJECT_DIR_SUFFIX } from "./constants.js";
 
 // ── Types ──
 
@@ -250,6 +252,7 @@ interface RunningProcess {
 
 export class CronScheduler {
   private store: CronStore;
+  private sessionDb: SessionDB;
   private config: CronConfig;
   private model: string;
   private permissionMode: string;
@@ -261,8 +264,9 @@ export class CronScheduler {
   /** Hook to resolve command sentinels (e.g., DREAMING_CONSOLIDATION). */
   commandResolver: ((command: string) => string | null) | null = null;
 
-  constructor(db: Database.Database, config: CronConfig, model = "claude-sonnet-4-6", permissionMode = "bypassPermissions") {
-    this.store = new CronStore(db);
+  constructor(sessionDb: SessionDB, config: CronConfig, model = "claude-sonnet-4-6", permissionMode = "bypassPermissions") {
+    this.sessionDb = sessionDb;
+    this.store = new CronStore(sessionDb.db);
     this.config = config;
     this.model = model;
     this.permissionMode = permissionMode;
@@ -379,7 +383,7 @@ export class CronScheduler {
     return new Promise((resolve) => {
       const args = [
         "-p",
-        "--output-format", "text",
+        "--output-format", "json",
         "--model", job.model || this.model,
         "--permission-mode", this.permissionMode,
         "--max-turns", "15",
@@ -424,10 +428,12 @@ export class CronScheduler {
       proc.on("exit", (code) => {
         clearTimeout(timeout);
         this.processes.delete(job.id);
+        const { result, sessionId } = parseClaudeJsonResult(rp.stdout);
+        if (sessionId) this.tombstoneBackgroundSession(sessionId);
         if (code === 0 || code === null) {
-          resolve({ result: rp.stdout.slice(0, 5000), status: "success" });
+          resolve({ result: result.slice(0, 5000), status: "success" });
         } else {
-          resolve({ result: (rp.stderr || rp.stdout).slice(0, 5000), status: "error" });
+          resolve({ result: (rp.stderr || result).slice(0, 5000), status: "error" });
         }
       });
 
@@ -437,6 +443,24 @@ export class CronScheduler {
         resolve({ result: String(err), status: "error" });
       });
     });
+  }
+
+  /** Hide a cron-spawned session from the history panel. The JSONL file
+   *  stays on disk (Claude's source of truth) but the indexer skips it. */
+  private tombstoneBackgroundSession(sessionId: string): void {
+    if (!/^[a-f0-9-]{36}$/i.test(sessionId)) return;
+    const filePath = join(
+      process.env.HOME || "/home/agent",
+      ".claude",
+      "projects",
+      PROJECT_DIR_SUFFIX,
+      `${sessionId}.jsonl`,
+    );
+    try {
+      this.sessionDb.tombstoneFilePath(filePath);
+    } catch (err) {
+      log("warn", `Failed to tombstone cron session ${sessionId}: ${err}`);
+    }
   }
 
   /** Execute a shell job */
@@ -588,4 +612,20 @@ export class CronScheduler {
 function log(level: string, msg: string): void {
   const ts = new Date().toISOString();
   process.stderr.write(JSON.stringify({ ts, level, component: "cron", msg }) + "\n");
+}
+
+/** Parse `claude -p --output-format json` stdout. Returns the text result
+ *  and the session_id the CLI reported, if any. Falls back to raw stdout
+ *  when the payload isn't valid JSON. */
+function parseClaudeJsonResult(stdout: string): { result: string; sessionId: string | null } {
+  const trimmed = stdout.trim();
+  if (!trimmed) return { result: "", sessionId: null };
+  try {
+    const obj = JSON.parse(trimmed);
+    const result = typeof obj.result === "string" ? obj.result : trimmed;
+    const sessionId = typeof obj.session_id === "string" ? obj.session_id : null;
+    return { result, sessionId };
+  } catch {
+    return { result: trimmed, sessionId: null };
+  }
 }

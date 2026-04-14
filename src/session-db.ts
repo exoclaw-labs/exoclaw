@@ -103,7 +103,37 @@ export class SessionDB {
         byte_offset INTEGER NOT NULL DEFAULT 0,
         last_indexed TEXT NOT NULL DEFAULT (datetime('now'))
       );
+
+      -- Tombstones prevent the indexer from resurrecting sessions the user
+      -- explicitly deleted. JSONL files on disk outlive the DB rows, so
+      -- without this, the next indexer pass would recreate them.
+      CREATE TABLE IF NOT EXISTS session_tombstones (
+        file_path TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
+  }
+
+  /** Whether this JSONL file has been tombstoned and should be skipped. */
+  isTombstoned(filePath: string): boolean {
+    const row = this.db.prepare("SELECT 1 FROM session_tombstones WHERE file_path = ?").get(filePath);
+    return !!row;
+  }
+
+  /** Tombstone a JSONL file so the indexer ignores it permanently.
+   *  Used by cron to hide background-spawned sessions from history. */
+  tombstoneFilePath(filePath: string): void {
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO session_tombstones (file_path) VALUES (?)
+        ON CONFLICT(file_path) DO NOTHING
+      `).run(filePath);
+      const row = this.db.prepare("SELECT id FROM sessions WHERE file_path = ?").get(filePath) as { id: number } | undefined;
+      if (row) {
+        this.db.prepare("DELETE FROM sessions WHERE id = ?").run(row.id);
+      }
+      this.db.prepare("DELETE FROM indexed_files WHERE file_path = ?").run(filePath);
+    })();
   }
 
   /** Get or create a session for a given JSONL file path. */
@@ -158,22 +188,37 @@ export class SessionDB {
     `).all(limit, offset) as SessionRow[];
   }
 
-  /** Delete all sessions and messages. */
+  /** Delete all sessions and messages. Tombstones every known file so the
+   *  indexer won't resurrect them on its next pass. */
   clearSessions(): void {
-    this.db.exec(`DELETE FROM messages_fts`);
-    this.db.exec(`DELETE FROM messages`);
-    this.db.exec(`DELETE FROM sessions`);
+    this.db.transaction(() => {
+      this.db.exec(`
+        INSERT INTO session_tombstones (file_path)
+        SELECT file_path FROM sessions
+        WHERE true
+        ON CONFLICT(file_path) DO NOTHING
+      `);
+      this.db.exec(`DELETE FROM messages_fts`);
+      this.db.exec(`DELETE FROM messages`);
+      this.db.exec(`DELETE FROM sessions`);
+      this.db.exec(`DELETE FROM indexed_files`);
+    })();
   }
 
-  /** Delete a single session and its messages by DB id. */
+  /** Delete a single session and its messages by DB id. Tombstones the
+   *  underlying JSONL file so the indexer won't re-add it. */
   deleteSession(sessionId: number): boolean {
-    // Messages cascade via ON DELETE CASCADE, but FTS triggers handle FTS cleanup
-    const deleted = this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId).changes;
-    if (deleted > 0) {
-      // Clean up indexed_files for the deleted session
-      this.db.prepare("DELETE FROM indexed_files WHERE file_path NOT IN (SELECT file_path FROM sessions)").run();
-    }
-    return deleted > 0;
+    const row = this.db.prepare("SELECT file_path FROM sessions WHERE id = ?").get(sessionId) as { file_path: string } | undefined;
+    if (!row) return false;
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO session_tombstones (file_path) VALUES (?)
+        ON CONFLICT(file_path) DO NOTHING
+      `).run(row.file_path);
+      this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      this.db.prepare("DELETE FROM indexed_files WHERE file_path = ?").run(row.file_path);
+    })();
+    return true;
   }
 
   /** Rename a session (update its title). */

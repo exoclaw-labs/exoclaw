@@ -71,6 +71,8 @@ export class SessionIndexer {
 
   /** Index a single JSONL file from where we left off. */
   private indexFile(filePath: string): void {
+    if (this.db.isTombstoned(filePath)) return;
+
     let fileSize: number;
     try {
       fileSize = statSync(filePath).size;
