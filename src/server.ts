@@ -413,7 +413,7 @@ export function createApp(config: GatewayConfig) {
   const ws = join(workspaceDir, "workspace");
   const wsClaudeDir = join(ws, ".claude");
   const CLAUDE_FILES: Record<string, string> = {
-    "settings.local.json": join(wsClaudeDir, "settings.local.json"),
+    "settings.json": join(wsClaudeDir, "settings.json"),
     ".mcp.json": join(ws, ".mcp.json"),
     "CLAUDE.md": join(ws, "CLAUDE.md"),
     "IDENTITY.md": join(ws, "IDENTITY.md"),
@@ -449,6 +449,17 @@ export function createApp(config: GatewayConfig) {
         }
       }
 
+      // Validate JSON configs up-front so we never persist a broken file
+      // that would trip Claude Code at load time.
+      let parsedMcp: { mcpServers?: Record<string, Record<string, unknown>> } | null = null;
+      if (name === ".mcp.json") {
+        try {
+          parsedMcp = JSON.parse(content || "{}");
+        } catch (err) {
+          return c.json({ error: "invalid_json", detail: `${err}` }, 400);
+        }
+      }
+
       // Ensure parent dir exists
       const dir = filePath.substring(0, filePath.lastIndexOf("/"));
       mkdirSync(dir, { recursive: true });
@@ -458,6 +469,36 @@ export function createApp(config: GatewayConfig) {
       // Re-sync CLAUDE.md after any workspace file change so companion references stay current
       if (name === "CLAUDE.md" || name.endsWith(".md")) {
         try { syncClaudeMd(); } catch { /* intentional */ }
+      }
+
+      // Reverse-sync: .mcp.json edits flow back into config.claude.mcpServers
+      // so the UI's config view and the on-disk file agree. Disabled servers
+      // live only in config (writeMcpConfig filters them out), so we preserve
+      // them here to avoid wiping them when the user edits the file.
+      if (name === ".mcp.json" && parsedMcp) {
+        try {
+          const existing = loadConfig();
+          if (!existing.claude) existing.claude = { model: "claude-sonnet-4-6", permissionMode: "bypassPermissions" };
+          const prevServers = (existing.claude.mcpServers || {}) as Record<string, { enabled?: boolean }>;
+          const fileServers = parsedMcp.mcpServers || {};
+
+          const merged: Record<string, Record<string, unknown>> = {};
+          // Preserve servers that are disabled in config (never written to file)
+          for (const [k, v] of Object.entries(prevServers)) {
+            if (v && v.enabled === false) merged[k] = v as Record<string, unknown>;
+          }
+          // Overlay everything present in the file (enabled by definition)
+          for (const [k, v] of Object.entries(fileServers)) {
+            merged[k] = { ...v, enabled: true };
+          }
+
+          existing.claude.mcpServers = merged;
+          saveConfigSafe(existing);
+          claude.updateConfig(existing.claude as ClaudeConfig);
+          audit.log({ event_type: "config_change", detail: "mcpServers synced from .mcp.json edit", source: "api" });
+        } catch (err) {
+          log("warn", `.mcp.json → config sync failed: ${err}`);
+        }
       }
 
       return c.json({ status: "ok", file: name });

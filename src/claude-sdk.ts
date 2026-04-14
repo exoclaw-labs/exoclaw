@@ -36,7 +36,7 @@ import type {
   McpServerConfig,
   McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execSync, type ChildProcess } from "child_process";
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { z } from "zod";
@@ -121,6 +121,10 @@ export class Claude {
     this._alive = true;
     this.loadSavedSessionId();
 
+    // Mirror config mcpServers into workspace/.mcp.json so Claude Code (and the
+    // user via the editor) see the same set of servers the SDK is using.
+    this.writeMcpConfig(this.config.mcpServers || {});
+
     if (USE_V2) {
       this.initV2Session();
     }
@@ -130,6 +134,56 @@ export class Claude {
     }
 
     log("info", `Claude SDK session manager started (mode=${USE_V2 ? "v2" : "stable"})`);
+  }
+
+  /**
+   * Write MCP servers to workspace/.mcp.json.
+   *
+   * Claude Code reads this file natively for project-scoped MCP servers.
+   * Exoclaw-managed servers (from config) are merged with any existing entries
+   * in .mcp.json (e.g. from `claude mcp add`). Our config wins on name collisions.
+   */
+  private writeMcpConfig(servers: Record<string, McpServerDef>): void {
+    const workspaceDir = join(process.env.HOME || "/tmp", "workspace");
+    try {
+      mkdirSync(workspaceDir, { recursive: true });
+    } catch { /* intentional */ }
+
+    // Fix ownership if workspace was created by root (stale Docker volume)
+    try {
+      writeFileSync(join(workspaceDir, ".mcp.json.probe"), "", { flag: "w" });
+      unlinkSync(join(workspaceDir, ".mcp.json.probe"));
+    } catch {
+      try { execSync(`sudo chown -R $(id -u):$(id -g) ${workspaceDir}`, { stdio: "ignore" }); } catch { /* best effort */ }
+    }
+
+    const path = join(workspaceDir, ".mcp.json");
+
+    // Read existing .mcp.json (may have been written by `claude mcp add` etc.)
+    let existing: Record<string, unknown> = {};
+    try {
+      const data = JSON.parse(readFileSync(path, "utf-8")) as { mcpServers?: Record<string, unknown> };
+      existing = data.mcpServers || {};
+    } catch { /* doesn't exist yet */ }
+
+    // Filter our config servers to only enabled ones, strip the 'enabled' field
+    const enabledServers: Record<string, unknown> = {};
+    for (const [name, def] of Object.entries(servers)) {
+      if (def.enabled === false) continue;
+      const rest = Object.fromEntries(Object.entries(def).filter(([k]) => k !== "enabled"));
+      enabledServers[name] = rest;
+    }
+
+    const allServers: Record<string, unknown> = {
+      ...existing,
+      ...enabledServers,
+    };
+
+    try {
+      writeFileSync(path, JSON.stringify({ mcpServers: allServers }, null, 2));
+    } catch (err) {
+      log("warn", `Failed to write .mcp.json: ${err}`);
+    }
   }
 
   /** Initialize a V2 persistent session. */
@@ -516,18 +570,25 @@ export class Claude {
       this.stopRemoteControl();
     }
 
+    const claudeBin = process.env.CLAUDE_BIN || "/usr/local/bin/claude";
     const args = ["remote-control"];
     if (this.config.name) {
       args.push("--name", this.config.name);
     }
 
-    log("info", `Starting remote control: claude ${args.join(" ")}`);
-    const proc = spawn("claude", args, {
-      stdio: ["ignore", "pipe", "pipe"],
+    log("info", `Starting remote control: ${claudeBin} ${args.join(" ")}`);
+    const proc = spawn(claudeBin, args, {
+      stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
       cwd: join(process.env.HOME || "/home/agent", "workspace"),
     });
     this._remoteControlProc = proc;
+
+    // Auto-accept the "Enable Remote Control? (y/n)" prompt
+    try {
+      proc.stdin?.write("y\n");
+      proc.stdin?.end();
+    } catch { /* intentional */ }
 
     const parseOutput = (data: Buffer) => {
       const text = data.toString();
@@ -619,6 +680,10 @@ export class Claude {
     const rcRunning = this._remoteControlProc !== null;
 
     this.config = config;
+
+    // Mirror mcpServers into workspace/.mcp.json so disk state stays in sync
+    // with the exoclaw config.
+    this.writeMcpConfig(config.mcpServers || {});
 
     // Start or stop remote control to match the new config
     if (rcWanted && !rcRunning) {

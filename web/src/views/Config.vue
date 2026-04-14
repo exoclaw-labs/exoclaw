@@ -11,8 +11,9 @@ const config = ref<Record<string, any>>({});
 const claudeFiles = ref<Record<string, string>>({});
 const jsonText = ref("");
 const saving = ref(false);
+const lastSavedName = ref("");
 const showPersonaWizard = ref(false);
-const activeJsonFile = ref(".mcp.json");
+const activeJsonFile = ref("config.json");
 const skills = ref<{ name: string; content: string }[]>([]);
 const activeSkill = ref<string | null>(null);
 const skillContent = ref("");
@@ -222,12 +223,12 @@ const mdPlaceholders: Record<string, string> = {
   "HEARTBEAT.md": "# Heartbeat\n\nPeriodic tasks to check on...",
 };
 
-const jsonFiles = [".mcp.json", "settings.local.json", "config.json"];
+const jsonFiles = ["config.json", "settings.json", ".mcp.json"];
 
 const jsonDescriptions: Record<string, string> = {
-  ".mcp.json": "Workspace MCP servers. Claude reads this natively. Servers from exoclaw config are merged here on startup.",
-  "settings.local.json": "Claude Code project-level settings override (workspace/.claude/).",
   "config.json": "ExoClaw gateway configuration (the full config that drives everything).",
+  "settings.json": "Claude Code project-level settings (workspace/.claude/settings.json).",
+  ".mcp.json": "Workspace MCP servers. Claude reads this natively. Servers from exoclaw config are merged here on startup.",
 };
 // ── Tunnel status ──
 const tunnelStatus = ref<{ provider: string; running: boolean; publicUrl: string | null; error: string | null; startedAt: string | null }>({
@@ -255,7 +256,7 @@ const loading = ref(true);
 
 // Sync JSON text when config changes (non-JSON sections)
 watch(config, (v) => {
-  if (section.value !== "json") jsonText.value = JSON.stringify(v, null, 2);
+  if (section.value !== "json-files") jsonText.value = JSON.stringify(v, null, 2);
 }, { deep: true });
 
 function applyJson() {
@@ -279,6 +280,7 @@ async function load() {
     config.value = cfg;
     claudeFiles.value = files;
     jsonText.value = JSON.stringify(cfg, null, 2);
+    lastSavedName.value = cfg.name || "";
     await loadSkills();
     await loadSubAgents();
     loadTunnelStatus();
@@ -325,6 +327,52 @@ async function toggleRemoteControl() {
   rcToggling.value = false;
 }
 
+// ── Name rename: propagate to .md files and systemPrompt ──
+async function onNameChange() {
+  const oldName = lastSavedName.value.trim();
+  const newName = (config.value.name || "").trim();
+  config.value.name = newName;
+
+  if (oldName && newName && oldName !== newName) {
+    const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const nameRegex = new RegExp(`\\b${escaped}\\b`, "g");
+
+    // Rewrite .md files that reference the old name
+    const changedFiles: string[] = [];
+    for (const [file, content] of Object.entries(claudeFiles.value)) {
+      if (!file.endsWith(".md") || typeof content !== "string") continue;
+      const updated = content.replace(nameRegex, newName);
+      if (updated !== content) {
+        claudeFiles.value[file] = updated;
+        changedFiles.push(file);
+      }
+    }
+
+    // Keep the agents-pane mirror in sync if it was populated
+    if (config.value.claudeMd !== undefined && claudeFiles.value["CLAUDE.md"] !== undefined) {
+      config.value.claudeMd = claudeFiles.value["CLAUDE.md"];
+    }
+
+    // Update systemPrompt if it referenced the old name
+    if (config.value.claude && typeof config.value.claude.systemPrompt === "string") {
+      const sp = config.value.claude.systemPrompt as string;
+      const updatedSp = sp.replace(nameRegex, newName);
+      if (updatedSp !== sp) config.value.claude.systemPrompt = updatedSp;
+    }
+
+    for (const file of changedFiles) {
+      try {
+        await saveClaudeFile(file, claudeFiles.value[file]);
+      } catch (e) {
+        msg.value = { type: "danger", text: `Failed to update ${file}: ${e}` };
+      }
+    }
+  }
+
+  lastSavedName.value = newName;
+  await autoSave();
+}
+
 // ── Auto-save for gateway/general sections ──
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -349,7 +397,10 @@ async function handleSave() {
   saving.value = true;
   msg.value = null;
   try {
-    if (section.value === "json") applyJson();
+    // When editing config.json in the JSON Files pane, parse jsonText back into config state
+    if (section.value === "json-files" && activeJsonFile.value === "config.json") {
+      applyJson();
+    }
     if (msg.value) { saving.value = false; return; }
 
     // Sync thinking budget
@@ -362,9 +413,11 @@ async function handleSave() {
       await saveClaudeFile("CLAUDE.md", config.value.claudeMd);
     }
 
-    for (const [name, content] of Object.entries(claudeFiles.value)) {
-      if (name === "CLAUDE.md") {
-        await saveClaudeFile(name, content);
+    // Persist the active non-config JSON file when editing in the JSON Files pane
+    if (section.value === "json-files" && activeJsonFile.value !== "config.json") {
+      const content = claudeFiles.value[activeJsonFile.value];
+      if (content !== undefined) {
+        await saveClaudeFile(activeJsonFile.value, content);
       }
     }
 
@@ -571,7 +624,7 @@ onMounted(() => { load(); pollRcState(); });
         <div class="card-body">
           <div class="mb-3">
             <label class="form-label small text-body-secondary">Name</label>
-            <input v-model="config.name" class="form-control form-control-sm font-monospace" @change="autoSave" />
+            <input v-model="config.name" class="form-control form-control-sm font-monospace" @change="onNameChange" />
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-4">
