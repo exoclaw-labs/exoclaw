@@ -48,6 +48,9 @@ x-claude-env: &claude-env
   # ── SDK mode ─────────────────────────────────────────────────────────────
   CLAUDE_SDK_V2: ${CLAUDE_SDK_V2:-false}
 
+  # ── Chat UI ──────────────────────────────────────────────────────────────
+  CHAT_SCROLLBACK: ${CHAT_SCROLLBACK:-5000}
+
 x-agent-defaults: &agent-defaults
   build: .
   restart: unless-stopped
@@ -63,6 +66,26 @@ x-agent-defaults: &agent-defaults
 
 services:
 
+  crucibleclaw:
+    <<: *agent-defaults
+    container_name: crucibleclaw
+    ports: ["127.0.0.1:8088:8080"]
+    volumes:
+      - crucible-data:/home/agent
+      # Seed config (read on first boot by config-store.ts)
+      - ./seeds/crucible/config/config.json:/app/config.json:ro
+      # Seed workspace files (copied on first boot by entrypoint)
+      - ./seeds/crucible/workspace:/app/seeds/workspace:ro
+    command: >
+      sh -c '
+        if [ ! -f ~/workspace/SOUL.md ]; then
+          echo "[seed] First boot — copying workspace seeds..."
+          cp -rn /app/seeds/workspace/* ~/workspace/ 2>/dev/null || true
+          cp -rn /app/seeds/workspace/.claude ~/workspace/ 2>/dev/null || true
+        fi
+        exec node /app/dist/index.js
+      '
+
   gregclaw:
     <<: *agent-defaults
     container_name: gregclaw
@@ -70,13 +93,22 @@ services:
     volumes:
       - gregclaw-data:/home/agent
 
-  linda:
+  lindaclaw:
     <<: *agent-defaults
-    container_name: linda
+    container_name: lindaclaw
     ports: ["127.0.0.1:8082:8080"]
     volumes:
       - lindaclaw-data:/home/agent
 
+  sydclaw:
+    <<: *agent-defaults
+    container_name: sydclaw
+    ports: ["127.0.0.1:8083:8080"]
+    volumes:
+      - sydclaw-data:/home/agent
+
 volumes:
   gregclaw-data:
   lindaclaw-data:
+  crucible-data:
+  sydclaw-data:

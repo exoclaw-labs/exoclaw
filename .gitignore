@@ -27,6 +27,6 @@ npm-debug.log*
 *.sqlite
 *.sqlite-journal
 
-docker-compose.override.yml.claude/
+docker-compose.override.yml
 .claude/
 tmp/
