@@ -1,220 +1,222 @@
 /**
- * Persistent config + secrets store.
+ * Persistent config store — YAML with !secret tags.
  *
- * Config and secrets live in $HOME/.exoclaw/ so they persist across
- * container restarts (via the named volume).
- *
- * - config.json  — non-sensitive settings (model, name, flags, etc.)
- * - secrets.json — channel tokens, API keys (read/write only by this module)
- *
- * The API returns a merged view. On save, it splits secrets out automatically.
+ * Single file: $HOME/.exoclaw/config.yml
+ * Secrets are inline with !secret YAML tags (no separate secrets.json).
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "fs";
 import { join } from "path";
+import { Document, Scalar, parse, stringify } from "yaml";
+import type { ScalarTag } from "yaml";
+import type { CreateNodeContext } from "yaml/dist/doc/createNode";
+import type { Schema } from "yaml/dist/schema/Schema";
+
+// ── SecretValue + YAML tag ──
+
+export class SecretValue {
+  constructor(public value: string) {}
+  toString() { return this.value; }
+  toJSON() { return this.value; }
+}
+
+const secretTag: ScalarTag = {
+  tag: "!secret",
+  identify: (value: unknown) => value instanceof SecretValue,
+  resolve(value: string) { return new SecretValue(value); },
+  createNode(schema: Schema, value: unknown, ctx: CreateNodeContext) {
+    const sv = value as SecretValue;
+    const node = new Scalar(sv.value);
+    node.tag = "!secret";
+    return node;
+  },
+};
+
+export function parseYaml(text: string): Record<string, any> {
+  return parse(text, { customTags: [secretTag] }) || {};
+}
+
+export function stringifyYaml(obj: Record<string, any>): string {
+  const doc = new Document(obj, { customTags: [secretTag] });
+  return doc.toString();
+}
+
+// ── Secret helpers ──
+
+/** Deep-walk obj, replace SecretValue -> plain string. Returns a new object. */
+export function resolveSecrets(obj: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v instanceof SecretValue) {
+      out[k] = v.value;
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = resolveSecrets(v);
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item) =>
+        item instanceof SecretValue ? item.value
+          : item && typeof item === "object" ? resolveSecrets(item)
+          : item
+      );
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/** Return dot-notation paths for every SecretValue in the object tree. */
+export function trackSecretPaths(obj: Record<string, any>, prefix = ""): string[] {
+  const paths: string[] = [];
+  for (const [k, v] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (v instanceof SecretValue) {
+      paths.push(path);
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      paths.push(...trackSecretPaths(v, path));
+    }
+  }
+  return paths;
+}
+
+/** Field names that are auto-tagged as secrets when written for the first time. */
+export const SECRET_FIELD_HINTS = new Set([
+  "apiToken", "botToken", "signingSecret", "secret", "appToken", "token", "apiKey",
+]);
+
+/** Deep-walk a plain object, wrap values at secretPaths with SecretValue.
+ *  Also auto-tags any field whose name matches SECRET_FIELD_HINTS. */
+export function retagSecrets(
+  obj: Record<string, any>,
+  secretPaths: Set<string>,
+  prefix = "",
+): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (v instanceof SecretValue) {
+      // Already tagged — pass through as-is
+      out[k] = v;
+    } else if (typeof v === "string" && (secretPaths.has(path) || SECRET_FIELD_HINTS.has(k))) {
+      out[k] = new SecretValue(v);
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = retagSecrets(v, secretPaths, path);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ── Paths ──
 
 const STORE_DIR = join(process.env.HOME || "/home/agent", ".exoclaw");
-const CONFIG_PATH = join(STORE_DIR, "config.json");
-const SECRETS_PATH = join(STORE_DIR, "secrets.json");
+const CONFIG_PATH = join(STORE_DIR, "config.yml");
+const LEGACY_CONFIG_PATH = join(STORE_DIR, "config.json");
+const LEGACY_SECRETS_PATH = join(STORE_DIR, "secrets.json");
 
-// Keys that are secrets (nested under their parent object)
-const SECRET_KEYS = new Set([
-  "apiToken",
-  "botToken",
-  "signingSecret",
-  "secret",
-  "appToken",
-]);
+const MASK = "••••••";
 
 function ensureDir() {
   mkdirSync(STORE_DIR, { recursive: true });
 }
 
-function readJson(path: string): Record<string, any> {
-  try { return JSON.parse(readFileSync(path, "utf-8")); }
-  catch (err) {
-    // File not found is expected on first boot; log parse errors
+/** Read config.yml, returning the raw parsed object (SecretValues intact). */
+function readConfigRaw(): Record<string, any> {
+  try {
+    return parseYaml(readFileSync(CONFIG_PATH, "utf-8"));
+  } catch (err) {
     if (err instanceof SyntaxError) {
-      log("warn", `Failed to parse ${path}: ${err.message}`);
+      log("warn", `Failed to parse ${CONFIG_PATH}: ${err.message}`);
     }
     return {};
   }
 }
 
-function writeJson(path: string, data: Record<string, any>) {
+/** Write the tagged config object to config.yml. */
+function writeConfigRaw(data: Record<string, any>) {
   ensureDir();
-  writeFileSync(path, JSON.stringify(data, null, 2));
+  writeFileSync(CONFIG_PATH, stringifyYaml(data));
 }
 
 /**
- * Load merged config (config.json + secrets.json overlaid).
- * Falls back to the mounted /app/config.json or env vars if nothing persisted yet.
+ * Load config. Reads config.yml, resolves !secret tags to plain strings,
+ * applies env-var overlays.
  */
 export function loadConfig(): Record<string, any> {
   ensureDir();
 
-  let config = readJson(CONFIG_PATH);
+  // Migration: convert legacy JSON if YAML doesn't exist yet
+  if (!existsSync(CONFIG_PATH) && existsSync(LEGACY_CONFIG_PATH)) {
+    migrateFromJson();
+  }
 
-  // First boot — try the mounted seed config
-  if (!config.name) {
+  let raw = readConfigRaw();
+
+  // First boot — try seed config or build from env
+  if (!raw.name) {
     const seedPath = process.env.CONFIG_PATH || "/app/config.json";
-    try { config = JSON.parse(readFileSync(seedPath, "utf-8")); }
-    catch {
-      // Build from env vars
-      config = {
-        name: process.env.AGENT_NAME || "agent",
-        port: parseInt(process.env.PORT || "8080", 10),
-        host: process.env.HOST || "0.0.0.0",
-        claude: {
-          model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
-          permissionMode: process.env.PERMISSION_MODE || "bypassPermissions",
-          systemPrompt: process.env.SYSTEM_PROMPT,
-          mcpServers: {
-            "agent-browser": {
-              enabled: true,
-              type: "stdio",
-              command: "npx",
-              args: ["agent-browser-mcp"],
-            },
-            composio: {
-              enabled: false,
-              type: "http",
-              url: "https://connect.composio.dev/mcp",
-              headers: { "x-consumer-api-key": "" },
-            },
-          },
-        },
-        channels: {
-          websocket: { enabled: true },
-        },
-      };
+    try {
+      const seed = JSON.parse(readFileSync(seedPath, "utf-8"));
+      raw = migrateShape(seed);
+    } catch {
+      raw = defaultConfig();
     }
-    // Persist immediately so it survives restart
-    writeJson(CONFIG_PATH, config);
+    writeConfigRaw(raw);
   }
 
-  // Overlay secrets
-  const secrets = readJson(SECRETS_PATH);
-  return mergeSecrets(config, secrets);
+  const config = resolveSecrets(raw);
+
+  // Env-var overlays
+  const envToken = process.env.EXOCLAW_API_TOKEN;
+  if (envToken) config.apiToken = envToken;
+
+  const peersEnv = process.env.EXOCLAW_PEERS;
+  if (peersEnv) {
+    try {
+      const parsed = JSON.parse(peersEnv);
+      if (parsed && typeof parsed === "object") {
+        config.peers = { ...(config.peers || {}), ...parsed };
+      }
+    } catch (err) {
+      log("warn", `Failed to parse EXOCLAW_PEERS env var: ${err}`);
+    }
+  }
+
+  return config;
 }
 
-/**
- * Save config. Splits secrets out into secrets.json, rest into config.json.
- */
+/** Save config. Re-tags secrets from the current file, then writes. */
 export function saveConfig(merged: Record<string, any>) {
-  const { config, secrets } = splitSecrets(merged);
-  writeJson(CONFIG_PATH, config);
-  writeJson(SECRETS_PATH, secrets);
+  const currentRaw = readConfigRaw();
+  const secretPaths = new Set(trackSecretPaths(currentRaw));
+  const tagged = retagSecrets(merged, secretPaths);
+  writeConfigRaw(tagged);
 }
 
-/**
- * Merge secrets back into config for API responses.
- */
-function mergeSecrets(config: Record<string, any>, secrets: Record<string, any>): Record<string, any> {
-  const merged = structuredClone(config);
-
-  // Top-level secrets
-  if (secrets.apiToken) merged.apiToken = secrets.apiToken;
-
-  // Channel secrets
-  if (secrets.channels) {
-    if (!merged.channels) merged.channels = {};
-    for (const [name, sec] of Object.entries(secrets.channels as Record<string, any>)) {
-      if (!merged.channels[name]) merged.channels[name] = {};
-      Object.assign(merged.channels[name], sec);
-    }
-  }
-
-  return merged;
-}
-
-/**
- * Split a merged config into non-secret config + secrets.
- */
-function splitSecrets(merged: Record<string, any>): { config: Record<string, any>; secrets: Record<string, any> } {
-  const config = structuredClone(merged);
-  const secrets: Record<string, any> = {};
-
-  // Top-level
-  if (config.apiToken) {
-    secrets.apiToken = config.apiToken;
-    delete config.apiToken;
-  }
-
-  // Channel secrets
-  if (config.channels) {
-    secrets.channels = {};
-    for (const [name, ch] of Object.entries(config.channels as Record<string, any>)) {
-      secrets.channels[name] = {};
-      for (const key of Object.keys(ch)) {
-        if (SECRET_KEYS.has(key)) {
-          secrets.channels[name][key] = ch[key];
-          delete ch[key];
-        }
-      }
-      if (Object.keys(secrets.channels[name]).length === 0) {
-        delete secrets.channels[name];
-      }
-    }
-    if (Object.keys(secrets.channels).length === 0) {
-      delete secrets.channels;
-    }
-  }
-
-  return { config, secrets };
-}
-
-const MASK = "••••••";
-
-/**
- * Load config with secrets masked for safe display.
- */
+/** Load config with secrets masked for safe display. */
 export function loadConfigMasked(): Record<string, any> {
-  const full = loadConfig();
-  return maskSecrets(full);
+  const raw = readConfigRaw();
+  return maskSecrets(raw);
 }
 
 function maskSecrets(obj: Record<string, any>): Record<string, any> {
-  const masked = structuredClone(obj);
-
-  if (masked.apiToken) masked.apiToken = MASK;
-
-  if (masked.channels) {
-    for (const ch of Object.values(masked.channels as Record<string, any>)) {
-      for (const key of Object.keys(ch)) {
-        if (SECRET_KEYS.has(key) && ch[key]) ch[key] = MASK;
-      }
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v instanceof SecretValue) {
+      out[k] = v.value ? MASK : "";
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = maskSecrets(v);
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item) =>
+        item instanceof SecretValue ? (item.value ? MASK : "")
+          : item && typeof item === "object" ? maskSecrets(item)
+          : item
+      );
+    } else {
+      out[k] = v;
     }
   }
-
-  // Mask peer tokens
-  if (masked.peers) {
-    for (const peer of Object.values(masked.peers as Record<string, any>)) {
-      if (peer && peer.token) peer.token = MASK;
-    }
-  }
-
-  // Mask MCP server env vars and headers that look like keys/tokens
-  if (masked.claude?.mcpServers) {
-    for (const srv of Object.values(masked.claude.mcpServers as Record<string, any>)) {
-      if (srv.env) {
-        for (const key of Object.keys(srv.env)) {
-          if ((key.includes("KEY") || key.includes("TOKEN") || key.includes("SECRET")) && srv.env[key] && srv.env[key] !== MASK) {
-            srv.env[key] = MASK;
-          }
-        }
-      }
-      if (srv.headers) {
-        for (const key of Object.keys(srv.headers)) {
-          if ((key.toLowerCase().includes("key") || key.toLowerCase().includes("token") || key.toLowerCase().includes("auth")) && srv.headers[key] && srv.headers[key] !== MASK) {
-            srv.headers[key] = MASK;
-          }
-        }
-      }
-    }
-  }
-
-  return masked;
+  return out;
 }
 
 /**
@@ -222,53 +224,135 @@ function maskSecrets(obj: Record<string, any>): Record<string, any> {
  */
 export function saveConfigSafe(incoming: Record<string, any>) {
   const existing = loadConfig();
-
-  // Restore masked values from existing secrets
-  if (incoming.apiToken === MASK) incoming.apiToken = existing.apiToken;
-
-  if (incoming.channels && existing.channels) {
-    for (const [name, ch] of Object.entries(incoming.channels as Record<string, any>)) {
-      const prev = (existing.channels as Record<string, any>)[name];
-      if (!prev) continue;
-      for (const key of Object.keys(ch)) {
-        if (SECRET_KEYS.has(key) && ch[key] === MASK) {
-          ch[key] = prev[key];
-        }
-      }
-    }
-  }
-
-  // Restore masked peer tokens
-  if (incoming.peers && existing.peers) {
-    for (const [name, peer] of Object.entries(incoming.peers as Record<string, any>)) {
-      const prev = (existing.peers as Record<string, any>)[name];
-      if (!prev) continue;
-      if (peer && peer.token === MASK && prev.token) peer.token = prev.token;
-    }
-  }
-
-  // Restore masked MCP server env vars and headers
-  if (incoming.claude?.mcpServers && existing.claude?.mcpServers) {
-    for (const [name, srv] of Object.entries(incoming.claude.mcpServers as Record<string, any>)) {
-      const prev = (existing.claude.mcpServers as Record<string, any>)[name];
-      if (!prev) continue;
-      if (srv.env && prev.env) {
-        for (const key of Object.keys(srv.env)) {
-          if (srv.env[key] === MASK && prev.env[key]) srv.env[key] = prev.env[key];
-        }
-      }
-      if (srv.headers && prev.headers) {
-        for (const key of Object.keys(srv.headers)) {
-          if (srv.headers[key] === MASK && prev.headers[key]) srv.headers[key] = prev.headers[key];
-        }
-      }
-    }
-  }
-
+  restoreMasked(incoming, existing);
   saveConfig(incoming);
 }
 
-export { CONFIG_PATH, SECRETS_PATH, STORE_DIR, MASK };
+/** Recursively restore masked values from existing config. */
+function restoreMasked(incoming: Record<string, any>, existing: Record<string, any>) {
+  for (const key of Object.keys(incoming)) {
+    if (incoming[key] === MASK && existing[key]) {
+      incoming[key] = existing[key];
+    } else if (
+      incoming[key] && typeof incoming[key] === "object" && !Array.isArray(incoming[key]) &&
+      existing[key] && typeof existing[key] === "object"
+    ) {
+      restoreMasked(incoming[key], existing[key]);
+    }
+  }
+}
+
+// ── Migration ──
+
+/** Migrate config.json + secrets.json -> config.yml */
+function migrateFromJson() {
+  log("info", "Migrating config.json -> config.yml");
+  let config: Record<string, any> = {};
+  try { config = JSON.parse(readFileSync(LEGACY_CONFIG_PATH, "utf-8")); } catch { return; }
+
+  let secrets: Record<string, any> = {};
+  try { secrets = JSON.parse(readFileSync(LEGACY_SECRETS_PATH, "utf-8")); } catch { /* no secrets file */ }
+
+  // Merge secrets back
+  if (secrets.apiToken) config.apiToken = secrets.apiToken;
+  if (secrets.claudeApiToken) config.claudeApiToken = secrets.claudeApiToken;
+  if (secrets.channels) {
+    if (!config.channels) config.channels = {};
+    for (const [name, sec] of Object.entries(secrets.channels as Record<string, any>)) {
+      if (!config.channels[name]) config.channels[name] = {};
+      Object.assign(config.channels[name], sec);
+    }
+  }
+  if (secrets.tunnel?.token) {
+    if (!config.tunnel) config.tunnel = {};
+    config.tunnel.token = secrets.tunnel.token;
+  }
+  if (secrets.embeddings?.apiKey) {
+    if (!config.embeddings) config.embeddings = {};
+    config.embeddings.apiKey = secrets.embeddings.apiKey;
+  }
+
+  // Reshape claude -> session
+  const shaped = migrateShape(config);
+
+  writeConfigRaw(shaped);
+
+  // Back up old files
+  try { renameSync(LEGACY_CONFIG_PATH, LEGACY_CONFIG_PATH + ".bak"); } catch { /* best effort */ }
+  try { renameSync(LEGACY_SECRETS_PATH, LEGACY_SECRETS_PATH + ".bak"); } catch { /* best effort */ }
+}
+
+/** Reshape old JSON config (claude key) into new YAML shape (session key).
+ *  Tags known secrets with SecretValue. */
+function migrateShape(old: Record<string, any>): Record<string, any> {
+  const claude = old.claude || {};
+  const { model, systemPrompt, mcpServers, permissionMode, agents, allowedTools,
+    disallowedTools, thinkingBudget, extraFlags, remoteControl, name: _cName, ...claudeRest } = claude;
+
+  const providerClaude: Record<string, any> = {};
+  if (permissionMode) providerClaude.permissionMode = permissionMode;
+  if (thinkingBudget !== undefined) providerClaude.thinkingBudget = thinkingBudget;
+  if (remoteControl !== undefined) providerClaude.remoteControl = remoteControl;
+  if (agents) providerClaude.agents = agents;
+  if (allowedTools?.length) providerClaude.allowedTools = allowedTools;
+  if (disallowedTools?.length) providerClaude.disallowedTools = disallowedTools;
+  if (extraFlags?.length) providerClaude.extraFlags = extraFlags;
+  Object.assign(providerClaude, claudeRest);
+
+  const session: Record<string, any> = {
+    provider: "claude",
+    model: model || "claude-sonnet-4-6",
+    providers: { claude: providerClaude },
+  };
+  if (systemPrompt) session.systemPrompt = systemPrompt;
+
+  const result: Record<string, any> = { ...old };
+  delete result.claude;
+  delete result.claudeApiToken;
+  result.session = session;
+
+  if (mcpServers) result.mcpServers = mcpServers;
+
+  if (old.claudeApiToken) {
+    session.providers.claude.apiKey = new SecretValue(old.claudeApiToken);
+  }
+
+  return retagSecrets(result, new Set());
+}
+
+/** Default config for first boot from env vars. */
+function defaultConfig(): Record<string, any> {
+  return retagSecrets({
+    name: process.env.AGENT_NAME || "agent",
+    port: parseInt(process.env.PORT || "8080", 10),
+    host: process.env.HOST || "0.0.0.0",
+    session: {
+      provider: "claude",
+      model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
+      systemPrompt: process.env.SYSTEM_PROMPT,
+      providers: {
+        claude: { permissionMode: process.env.PERMISSION_MODE || "bypassPermissions" },
+      },
+    },
+    mcpServers: {
+      "agent-browser": {
+        enabled: true,
+        type: "stdio",
+        command: "npx",
+        args: ["agent-browser-mcp"],
+      },
+      composio: {
+        enabled: false,
+        type: "http",
+        url: "https://connect.composio.dev/mcp",
+        headers: { "x-consumer-api-key": "" },
+      },
+    },
+    channels: { websocket: { enabled: true } },
+  }, new Set());
+}
+
+export { CONFIG_PATH, STORE_DIR, MASK };
 
 function log(level: string, msg: string): void {
   const ts = new Date().toISOString();
