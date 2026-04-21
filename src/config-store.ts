@@ -9,8 +9,6 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "
 import { join } from "path";
 import { Document, Scalar, parse, stringify } from "yaml";
 import type { ScalarTag } from "yaml";
-import type { CreateNodeContext } from "yaml/dist/doc/createNode";
-import type { Schema } from "yaml/dist/schema/Schema";
 
 // ── SecretValue + YAML tag ──
 
@@ -24,7 +22,7 @@ const secretTag: ScalarTag = {
   tag: "!secret",
   identify: (value: unknown) => value instanceof SecretValue,
   resolve(value: string) { return new SecretValue(value); },
-  createNode(schema: Schema, value: unknown, ctx: CreateNodeContext) {
+  createNode(schema: unknown, value: unknown, ctx: unknown) {
     const sv = value as SecretValue;
     const node = new Scalar(sv.value);
     node.tag = "!secret";

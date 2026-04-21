@@ -11,11 +11,6 @@ import { setupTerminal } from "./channels/terminal.js";
 
 const config = loadConfig() as GatewayConfig;
 
-// Pass the gateway name into the claude config so it's used for --name and remote control
-if (config.name && config.claude) {
-  config.claude.name = config.name;
-}
-
 // Inject channel secrets into process.env so channel modules can read them.
 // Secrets are merged into config by loadConfig() but channel modules read env vars.
 const channels: Record<string, any> = config.channels || {};

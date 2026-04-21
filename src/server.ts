@@ -18,8 +18,8 @@ import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
-import { exec, execSync } from "child_process";
-import { Claude, type ClaudeConfig, type McpServerDef } from "./claude-sdk.js";
+import { exec, execSync, execFileSync } from "child_process";
+import { Claude, type SessionConfig, type McpServerDef } from "./claude-sdk.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -53,6 +53,8 @@ import { enrichLinks } from "./link-enricher.js";
 import { runDiagnostics } from "./doctor.js";
 import { MessageQueue, type QueueConfig } from "./message-queue.js";
 import { registerOpenAIRoutes } from "./openai-compat.js";
+import { SupervisorClient } from "./supervisor/client.js";
+import { SupervisorUnavailable } from "./supervisor/protocol.js";
 import { HookRegistry, type HookContext } from "./hooks.js";
 import { KnowledgeGraph } from "./knowledge-graph.js";
 import { compressSession, compressRecentSessions } from "./context-compressor.js";
@@ -133,7 +135,8 @@ export interface GatewayConfig {
   apiToken?: string;
   setupComplete?: boolean;
   browserTool?: "browser-use" | "agent-browser" | "none";
-  claude: ClaudeConfig;
+  session: SessionConfig;
+  mcpServers?: Record<string, McpServerDef>;
   channels: {
     slack?: { enabled: boolean };
     discord?: { enabled: boolean };
@@ -157,21 +160,43 @@ const startedAt = Date.now();
 export function createApp(config: GatewayConfig) {
   // Translate peer gateways into http MCP servers so Claude sees them as native tools.
   // Each peer becomes `mcp__peer-<name>__send_message` / `__get_status`.
-  // Done before `new Claude()` so writeMcpConfig picks them up for .mcp.json too.
+  // Done before `new Claude()` so the MCP server map is complete.
   if (config.peers) {
-    config.claude.mcpServers = config.claude.mcpServers || {};
+    config.mcpServers = config.mcpServers || {};
     for (const [peerName, peer] of Object.entries(config.peers)) {
       if (peer.enabled === false) continue;
       const key = `peer-${peerName}`;
       const headers: Record<string, string> = {};
       if (peer.token) headers["Authorization"] = `Bearer ${peer.token}`;
       const def: McpServerDef = { type: "http", url: peer.url, headers };
-      config.claude.mcpServers[key] = def;
+      config.mcpServers[key] = def;
     }
   }
 
-  const claude = new Claude(config.claude);
+  const claude = new Claude(config.session, config.mcpServers || {});
+  claude.name = config.name;
   claude.start();
+
+  const sessionModel = config.session.model;
+  const sessionPermMode = (config.session.providers?.claude as any)?.permissionMode || "bypassPermissions";
+
+  const supervisor = new SupervisorClient();
+  let rcCache: { url: string | null; running: boolean; expires: number } | null = null;
+  async function readRemoteControl(): Promise<{ url: string | null; running: boolean }> {
+    if (rcCache && rcCache.expires > Date.now()) {
+      return { url: rcCache.url, running: rcCache.running };
+    }
+    try {
+      const info = await supervisor.unitInfo("remote-control");
+      const running = info.state === "running" || info.state === "starting";
+      const url = typeof info.extras.remoteControlUrl === "string" ? info.extras.remoteControlUrl : null;
+      rcCache = { url, running, expires: Date.now() + 2000 };
+      return { url, running };
+    } catch {
+      rcCache = { url: null, running: false, expires: Date.now() + 2000 };
+      return { url: null, running: false };
+    }
+  }
 
   const app = new OpenAPIHono();
 
@@ -212,15 +237,90 @@ export function createApp(config: GatewayConfig) {
 
   // ── GET /api/status ──
 
-  app.openapi(statusRoute, (c) => {
+  app.openapi(statusRoute, async (c) => {
+    const rc = await readRemoteControl();
     return c.json({
       provider: "claude-code",
-      model: config.claude.model,
+      model: sessionModel,
       uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
       gateway_port: config.port,
       paired: true,
-      session: { alive: claude.alive, busy: claude.busy, io: "agent-sdk", remoteControlUrl: claude.remoteControlUrl, remoteControlRunning: claude.remoteControlRunning },
+      session: { alive: claude.alive, busy: claude.busy, io: "agent-sdk", remoteControlUrl: rc.url, remoteControlRunning: rc.running },
     });
+  });
+
+  // ── Services API (proxied to supervisor) ──
+
+  app.get("/api/services", async (c) => {
+    try {
+      const { units } = await supervisor.status();
+      return c.json({ units });
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) {
+        return c.json({ error: "supervisor_unavailable", units: [] }, 503);
+      }
+      return c.json({ error: "supervisor_error", detail: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/services/:unit", async (c) => {
+    try {
+      const info = await supervisor.unitInfo(c.req.param("unit"));
+      return c.json(info);
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) {
+        return c.json({ error: "supervisor_unavailable" }, 503);
+      }
+      return c.json({ error: "unit_not_found", detail: (err as Error).message }, 404);
+    }
+  });
+
+  app.post("/api/services/:unit/start", async (c) => {
+    try {
+      const info = await supervisor.start(c.req.param("unit"));
+      audit.log({ event_type: "service_start", detail: `start ${c.req.param("unit")}`, source: "api" });
+      return c.json(info);
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) return c.json({ error: "supervisor_unavailable" }, 503);
+      return c.json({ error: "start_failed", detail: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/services/:unit/stop", async (c) => {
+    try {
+      const info = await supervisor.stop(c.req.param("unit"));
+      audit.log({ event_type: "service_stop", detail: `stop ${c.req.param("unit")}`, source: "api" });
+      return c.json(info);
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) return c.json({ error: "supervisor_unavailable" }, 503);
+      return c.json({ error: "stop_failed", detail: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/services/:unit/restart", async (c) => {
+    try {
+      const info = await supervisor.restart(c.req.param("unit"));
+      audit.log({ event_type: "service_restart", detail: `restart ${c.req.param("unit")}`, source: "api" });
+      return c.json(info);
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) return c.json({ error: "supervisor_unavailable" }, 503);
+      return c.json({ error: "restart_failed", detail: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/services/upgrade", async (c) => {
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as { target?: string; noGatewayRestart?: boolean };
+      if (body.target !== "claude") {
+        return c.json({ error: "unsupported_target", detail: "only target=claude is supported" }, 400);
+      }
+      const result = await supervisor.upgradeClaude({ noGatewayRestart: body.noGatewayRestart });
+      audit.log({ event_type: "claude_upgrade", detail: `${result.oldVersion ?? "?"} → ${result.newVersion ?? "?"}`, source: "api" });
+      return c.json(result);
+    } catch (err) {
+      if (err instanceof SupervisorUnavailable) return c.json({ error: "supervisor_unavailable" }, 503);
+      return c.json({ error: "upgrade_failed", detail: (err as Error).message }, 500);
+    }
   });
 
   // ── POST /webhook ──
@@ -269,116 +369,119 @@ export function createApp(config: GatewayConfig) {
   // Auth: reuses the gateway Bearer middleware above. Peers put this container's
   // apiToken in an Authorization header (wired via config.peers[*].token).
 
-  const peerMcp = new McpServer(
-    { name: `exoclaw-peer-${config.name}`, version: "0.1.0" },
-    {
-      capabilities: { tools: {} },
-      instructions: `This is the peer interface for exoclaw gateway "${config.name}". Use send_message to deliver a message to its Claude session. Use get_status to check if the peer is alive and free.`,
-    },
-  );
-
-  peerMcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+  // Fresh MCP server per request — stateless HTTP transport is single-use.
+  function createPeerMcpServer(): McpServer {
+    const mcp = new McpServer(
+      { name: `exoclaw-peer-${config.name}`, version: "0.1.0" },
       {
-        name: "send_message",
-        description: `Send a message to the "${config.name}" exoclaw gateway. By default the call returns immediately ("queued") and the peer will respond asynchronously by calling your own send_message in the reverse direction. Set wait_for_reply=true to block until the peer's Claude finishes a turn (times out after ~5 min; can deadlock if both peers wait on each other — avoid mutual wait_for_reply).`,
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            text: { type: "string", description: "The message text to deliver" },
-            wait_for_reply: {
-              type: "boolean",
-              description: "If true, wait for the peer's Claude to complete a turn and return its final text. Default false (fire-and-forget).",
+        capabilities: { tools: {} },
+        instructions: `This is the peer interface for exoclaw gateway "${config.name}". Use send_message to deliver a message to its Claude session. Use get_status to check if the peer is alive and free.`,
+      },
+    );
+
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: "send_message",
+          description: `Send a message to the "${config.name}" exoclaw gateway. By default the call returns immediately ("queued") and the peer will respond asynchronously by calling your own send_message in the reverse direction. Set wait_for_reply=true to block until the peer's Claude finishes a turn (times out after ~5 min; can deadlock if both peers wait on each other — avoid mutual wait_for_reply).`,
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              text: { type: "string", description: "The message text to deliver" },
+              wait_for_reply: {
+                type: "boolean",
+                description: "If true, wait for the peer's Claude to complete a turn and return its final text. Default false (fire-and-forget).",
+              },
             },
+            required: ["text"],
           },
-          required: ["text"],
         },
-      },
-      {
-        name: "get_status",
-        description: `Return the current status of the "${config.name}" exoclaw gateway: whether its Claude session is alive, whether it's busy processing a turn, its model, and its name.`,
-        inputSchema: { type: "object" as const, properties: {} },
-      },
-    ],
-  }));
+        {
+          name: "get_status",
+          description: `Return the current status of the "${config.name}" exoclaw gateway: whether its Claude session is alive, whether it's busy processing a turn, its model, and its name.`,
+          inputSchema: { type: "object" as const, properties: {} },
+        },
+      ],
+    }));
 
-  peerMcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-    if (req.params.name === "send_message") {
-      const { text, wait_for_reply = false } = (req.params.arguments || {}) as {
-        text?: string;
-        wait_for_reply?: boolean;
-      };
-      if (!text) {
-        return { content: [{ type: "text" as const, text: "[error: text is required]" }] };
-      }
-      if (!claude.alive) {
-        return { content: [{ type: "text" as const, text: "[peer session not running]" }] };
-      }
-      if (estop.isActive) {
-        return { content: [{ type: "text" as const, text: `[peer estop active: ${estop.state.reason ?? "frozen"}]` }] };
+    mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+      if (req.params.name === "send_message") {
+        const { text, wait_for_reply = false } = (req.params.arguments || {}) as {
+          text?: string;
+          wait_for_reply?: boolean;
+        };
+        if (!text) {
+          return { content: [{ type: "text" as const, text: "[error: text is required]" }] };
+        }
+        if (!claude.alive) {
+          return { content: [{ type: "text" as const, text: "[peer session not running]" }] };
+        }
+        if (estop.isActive) {
+          return { content: [{ type: "text" as const, text: `[peer estop active: ${estop.state.reason ?? "frozen"}]` }] };
+        }
+
+        const enriched = await enrichLinks(text).catch(() => text);
+
+        if (!wait_for_reply) {
+          void (async () => {
+            try {
+              await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
+            } catch (err) {
+              log("warn", `Peer message enqueue failed: ${err}`);
+            }
+          })();
+          return {
+            content: [{
+              type: "text" as const,
+              text: `[queued — ${config.name} will respond asynchronously]`,
+            }],
+          };
+        }
+
+        try {
+          const reply = await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
+          return { content: [{ type: "text" as const, text: reply }] };
+        } catch (err) {
+          return { content: [{ type: "text" as const, text: `[peer error: ${err}]` }] };
+        }
       }
 
-      const enriched = await enrichLinks(text).catch(() => text);
-
-      if (!wait_for_reply) {
-        // Fire-and-forget: let the peer respond by initiating its own send_message back.
-        void (async () => {
-          try {
-            await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
-          } catch (err) {
-            log("warn", `Peer message enqueue failed: ${err}`);
-          }
-        })();
+      if (req.params.name === "get_status") {
         return {
           content: [{
             type: "text" as const,
-            text: `[queued — ${config.name} will respond asynchronously]`,
+            text: JSON.stringify({
+              name: config.name,
+              model: sessionModel,
+              alive: claude.alive,
+              busy: claude.busy,
+              estop: estop.isActive,
+              pending: messageQueue.pending,
+            }),
           }],
         };
       }
 
-      try {
-        const reply = await messageQueue.enqueue(enriched, "peer", () => claude.busy, (p) => claude.send(p));
-        return { content: [{ type: "text" as const, text: reply }] };
-      } catch (err) {
-        return { content: [{ type: "text" as const, text: `[peer error: ${err}]` }] };
-      }
-    }
+      return { content: [{ type: "text" as const, text: `Unknown tool: ${req.params.name}` }] };
+    });
 
-    if (req.params.name === "get_status") {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            name: config.name,
-            model: config.claude.model,
-            alive: claude.alive,
-            busy: claude.busy,
-            estop: estop.isActive,
-            pending: messageQueue.pending,
-          }),
-        }],
-      };
-    }
-
-    return { content: [{ type: "text" as const, text: `Unknown tool: ${req.params.name}` }] };
-  });
-
-  const peerMcpTransport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless — each peer request is independent
-    enableJsonResponse: true,      // plain JSON responses, no SSE bookkeeping
-  });
-
-  peerMcp.connect(peerMcpTransport).catch((err) => {
-    log("error", `Peer MCP transport connect failed: ${err}`);
-  });
+    return mcp;
+  }
 
   app.all("/mcp", async (c) => {
+    const mcp = createPeerMcpServer();
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    await mcp.connect(transport);
     try {
-      return await peerMcpTransport.handleRequest(c.req.raw);
+      return await transport.handleRequest(c.req.raw);
     } catch (err) {
       log("error", `Peer MCP handleRequest error: ${err}`);
       return c.json({ error: "peer_mcp_error", detail: String(err) }, 500);
+    } finally {
+      await mcp.close().catch(() => {});
     }
   });
 
@@ -541,11 +644,26 @@ export function createApp(config: GatewayConfig) {
       if (!parsed.success) {
         return c.json({ error: "validation_error", detail: parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") }, 400);
       }
+      // Capture desired remote-control state before we save, so we can diff
+      const rcDesired = body?.session?.providers?.claude?.remoteControl === true;
       saveConfigSafe(body);
-      // Push claude config changes to the running instance
-      if (body.claude) {
-        claude.updateConfig(body.claude);
+      // Push session config changes to the running instance
+      if (body.session) {
+        claude.updateConfig(body.session, body.mcpServers);
       }
+      // Ask the supervisor to start/stop the remote-control unit to match.
+      // Failures here are non-fatal — supervisor may be unavailable in dev.
+      void (async () => {
+        try {
+          const info = await supervisor.unitInfo("remote-control");
+          const running = info.state === "running" || info.state === "starting";
+          if (rcDesired && !running) await supervisor.start("remote-control");
+          if (!rcDesired && running) await supervisor.stop("remote-control");
+          rcCache = null; // invalidate so next /api/status reads fresh
+        } catch {
+          /* supervisor unavailable — skip */
+        }
+      })();
       audit.log({ event_type: "config_change", detail: "Config updated via API", source: "api" });
       return c.json({ status: "ok" });
     } catch (err) {
@@ -599,15 +717,13 @@ export function createApp(config: GatewayConfig) {
         }
       }
 
-      // Validate JSON configs up-front so we never persist a broken file
-      // that would trip Claude Code at load time.
-      let parsedMcp: { mcpServers?: Record<string, Record<string, unknown>> } | null = null;
+      // .mcp.json is no longer writable through this endpoint — MCP servers
+      // are now configured in config.yml via PUT /api/config.
       if (name === ".mcp.json") {
-        try {
-          parsedMcp = JSON.parse(content || "{}");
-        } catch (err) {
-          return c.json({ error: "invalid_json", detail: `${err}` }, 400);
-        }
+        return c.json({
+          error: "gone",
+          detail: "MCP servers are now configured in config.yml. Use PUT /api/config to update mcpServers.",
+        }, 410);
       }
 
       // Ensure parent dir exists
@@ -619,36 +735,6 @@ export function createApp(config: GatewayConfig) {
       // Re-sync CLAUDE.md after any workspace file change so companion references stay current
       if (name === "CLAUDE.md" || name.endsWith(".md")) {
         try { syncClaudeMd(); } catch { /* intentional */ }
-      }
-
-      // Reverse-sync: .mcp.json edits flow back into config.claude.mcpServers
-      // so the UI's config view and the on-disk file agree. Disabled servers
-      // live only in config (writeMcpConfig filters them out), so we preserve
-      // them here to avoid wiping them when the user edits the file.
-      if (name === ".mcp.json" && parsedMcp) {
-        try {
-          const existing = loadConfig();
-          if (!existing.claude) existing.claude = { model: "claude-sonnet-4-6", permissionMode: "bypassPermissions" };
-          const prevServers = (existing.claude.mcpServers || {}) as Record<string, { enabled?: boolean }>;
-          const fileServers = parsedMcp.mcpServers || {};
-
-          const merged: Record<string, Record<string, unknown>> = {};
-          // Preserve servers that are disabled in config (never written to file)
-          for (const [k, v] of Object.entries(prevServers)) {
-            if (v && v.enabled === false) merged[k] = v as Record<string, unknown>;
-          }
-          // Overlay everything present in the file (enabled by definition)
-          for (const [k, v] of Object.entries(fileServers)) {
-            merged[k] = { ...v, enabled: true };
-          }
-
-          existing.claude.mcpServers = merged;
-          saveConfigSafe(existing);
-          claude.updateConfig(existing.claude as ClaudeConfig);
-          audit.log({ event_type: "config_change", detail: "mcpServers synced from .mcp.json edit", source: "api" });
-        } catch (err) {
-          log("warn", `.mcp.json → config sync failed: ${err}`);
-        }
       }
 
       return c.json({ status: "ok", file: name });
@@ -762,7 +848,7 @@ export function createApp(config: GatewayConfig) {
     reviewMemory: si.backgroundReview?.reviewMemory !== false,
     reviewSkills: si.backgroundReview?.reviewSkills !== false,
   };
-  const reviewer = new BackgroundReviewer(reviewConfig, config.claude.model, config.claude.permissionMode);
+  const reviewer = new BackgroundReviewer(reviewConfig, sessionModel, sessionPermMode);
 
   // Store recent review events for the dashboard
   const recentReviewEvents: ReviewEvent[] = [];
@@ -949,7 +1035,7 @@ export function createApp(config: GatewayConfig) {
     defaultTimeoutMs: config.cron?.defaultTimeoutMs ?? 3 * 60_000,
     catchUpOnStartup: config.cron?.catchUpOnStartup ?? false,
   };
-  const scheduler = new CronScheduler(sessionDb, cronConfig, config.claude.model, config.claude.permissionMode);
+  const scheduler = new CronScheduler(sessionDb, cronConfig, sessionModel, sessionPermMode);
 
   scheduler.onJobComplete((job, run) => {
     audit.log({
@@ -1114,9 +1200,39 @@ export function createApp(config: GatewayConfig) {
     } catch { return ""; }
   }
 
+  // Parse a key string into tokens. Quoted substrings become literal text
+  // (sent with tmux `-l`), bare words are sent as tmux key names.
+  // Examples:
+  //   `"abc" Enter`          -> [{literal: "abc"}, {key: "Enter"}]
+  //   `Up`                    -> [{key: "Up"}]
+  //   `"a#b$c" Enter`        -> [{literal: "a#b$c"}, {key: "Enter"}]
+  function parseLoginKeys(raw: string): Array<{ literal?: string; key?: string }> {
+    const tokens: Array<{ literal?: string; key?: string }> = [];
+    const re = /"((?:[^"\\]|\\.)*)"|(\S+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw)) !== null) {
+      if (m[1] !== undefined) {
+        tokens.push({ literal: m[1].replace(/\\"/g, '"') });
+      } else if (m[2] !== undefined) {
+        tokens.push({ key: m[2] });
+      }
+    }
+    return tokens;
+  }
+
   function sendLoginKeys(keys: string): void {
+    const tokens = parseLoginKeys(keys);
+    if (tokens.length === 0) return;
     try {
-      execSync(`tmux send-keys -t ${LOGIN_TMUX} ${keys}`, { env: process.env });
+      for (const tok of tokens) {
+        if (tok.literal !== undefined) {
+          // `-l` makes tmux treat characters literally (no key-name lookup,
+          // no shell interpretation since we use execFileSync).
+          execFileSync("tmux", ["send-keys", "-t", LOGIN_TMUX, "-l", tok.literal], { env: process.env });
+        } else if (tok.key) {
+          execFileSync("tmux", ["send-keys", "-t", LOGIN_TMUX, tok.key], { env: process.env });
+        }
+      }
     } catch (err) {
       log("error", `Failed to send login keys: ${err}`);
     }
@@ -1296,10 +1412,9 @@ export function createApp(config: GatewayConfig) {
       cfg.setupComplete = true;
       cfg.browserTool = browserTool;
 
-      if (!cfg.claude) cfg.claude = {};
-      if (!cfg.claude.mcpServers) cfg.claude.mcpServers = {};
+      if (!cfg.mcpServers) cfg.mcpServers = {};
 
-      const servers = cfg.claude.mcpServers as Record<string, any>;
+      const servers = cfg.mcpServers as Record<string, any>;
 
       // Disable all browser MCP servers first
       for (const name of ["agent-browser", "browser-use"]) {
@@ -1721,7 +1836,7 @@ export function createApp(config: GatewayConfig) {
 
   // ── SOP Engine ──
 
-  const sopEngine = new SOPEngine(sessionDb.db, config.claude.model, config.claude.permissionMode);
+  const sopEngine = new SOPEngine(sessionDb.db, sessionModel, sessionPermMode);
 
   sopEngine.onStepComplete((run, stepIdx, result, status) => {
     broadcastSSE("sop_step", { run_id: run.id, sop: run.sop_name, step: stepIdx, status, result: result.slice(0, 200) });
@@ -1840,14 +1955,14 @@ export function createApp(config: GatewayConfig) {
   app.post("/api/sessions/:id/compress", async (c) => {
     const id = parseInt(c.req.param("id"));
     if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
-    const result = await compressSession(sessionDb, id, config.claude.model);
+    const result = await compressSession(sessionDb, id, sessionModel);
     if (!result) return c.json({ error: "nothing_to_compress" }, 404);
     return c.json(result);
   });
 
   app.get("/api/sessions/context", async (c) => {
     const count = parseInt(c.req.query("count") || "3");
-    const context = await compressRecentSessions(sessionDb, count, config.claude.model);
+    const context = await compressRecentSessions(sessionDb, count, sessionModel);
     return c.json({ context });
   });
 
@@ -1897,8 +2012,8 @@ export function createApp(config: GatewayConfig) {
 
   // ── Multi-Agent System ──
 
-  const delegations = new DelegationManager(config.claude.model, config.claude.permissionMode);
-  const swarm = new SwarmCoordinator(config.claude.model, config.claude.permissionMode);
+  const delegations = new DelegationManager(sessionModel, sessionPermMode);
+  const swarm = new SwarmCoordinator(sessionModel, sessionPermMode);
   const router = new MessageRouter();
 
   app.post("/api/delegate", async (c) => {
