@@ -19,7 +19,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
 import { exec, execSync, execFileSync } from "child_process";
-import { Claude, type SessionConfig, type McpServerDef } from "./claude-sdk.js";
+import { createSessionBackend, type SessionBackend } from "./session-backend.js";
+import type { SessionConfig, McpServerDef } from "./session-backend.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -173,7 +174,7 @@ export function createApp(config: GatewayConfig) {
     }
   }
 
-  const claude = new Claude(config.session, config.mcpServers || {});
+  const claude = createSessionBackend(config.session, config.mcpServers || {});
   claude.name = config.name;
   claude.start();
 
@@ -2087,7 +2088,7 @@ export function createApp(config: GatewayConfig) {
 
 // ── Helpers ──
 
-async function collectResponse(claude: Claude, prompt: string) {
+async function collectResponse(claude: SessionBackend, prompt: string) {
   let fullText = "";
 
   for await (const event of claude.send(prompt)) {

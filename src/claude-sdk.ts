@@ -40,6 +40,7 @@ import type {
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { z } from "zod";
+import type { SessionBackend } from "./session-backend.js";
 import { SessionDB } from "./session-db.js";
 
 // ── Types ──
@@ -73,7 +74,7 @@ export type ApprovalHandler = (action: string, detail?: string, riskLevel?: stri
 /** Whether to use the unstable V2 session API. */
 const USE_V2 = process.env.CLAUDE_SDK_V2 === "true";
 
-export class Claude {
+export class Claude implements SessionBackend {
   private config: SessionConfig;
   public mcpServers: Record<string, McpServerDef>;
   private _name: string | null = null;
