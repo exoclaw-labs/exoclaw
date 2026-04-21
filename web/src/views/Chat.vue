@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from "vue";
 import { marked } from "marked";
-import { fetchConfig, saveConfig, fetchStatus } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchStatus, apiFetch, getToken } from "../composables/useApi";
 
 // ── Message types ──
 interface ToolEntry {
@@ -130,7 +130,9 @@ function wsUrl(): string {
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
-  ws = new WebSocket(wsUrl());
+  const token = getToken();
+  const protocols = token ? [`bearer.${token}`] : [];
+  ws = new WebSocket(wsUrl(), protocols);
 
   ws.onopen = () => {
     connected.value = true;
@@ -260,6 +262,13 @@ function toggleHistory() {
 const config = ref<Record<string, any>>({});
 const savingConfig = ref(false);
 
+function ensureClaudeProvider() {
+  if (!config.value.session) config.value.session = { provider: "claude", model: "claude-sonnet-4-6" };
+  if (!config.value.session.providers) config.value.session.providers = {};
+  if (!config.value.session.providers.claude) config.value.session.providers.claude = {};
+  return config.value.session.providers.claude;
+}
+
 const models = [
   "claude-opus-4-6",
   "claude-sonnet-4-6",
@@ -291,21 +300,20 @@ const thinkingLevels = [
 const thinkingLevel = ref("");
 
 function initThinkingLevel() {
-  const tb = config.value?.claude?.thinkingBudget;
+  const tb = config.value?.session?.providers?.claude?.thinkingBudget;
   thinkingLevel.value = tb !== undefined ? String(tb) : "";
 }
 
 async function updateModel(value: string) {
-  if (!config.value.claude) config.value.claude = {};
-  config.value.claude.model = value;
+  if (!config.value.session) config.value.session = { provider: "claude", model: "claude-sonnet-4-6" };
+  config.value.session.model = value;
   savingConfig.value = true;
   try { await saveConfig(config.value); } catch {}
   savingConfig.value = false;
 }
 
 async function updateThinkingLevel(value: string) {
-  if (!config.value.claude) config.value.claude = {};
-  config.value.claude.thinkingBudget = value ? parseInt(value, 10) : undefined;
+  ensureClaudeProvider().thinkingBudget = value ? parseInt(value, 10) : undefined;
   thinkingLevel.value = value;
   savingConfig.value = true;
   try { await saveConfig(config.value); } catch {}
@@ -338,8 +346,7 @@ const remoteControlEnabled = computed(() => remoteControlRunning.value);
 async function toggleRemoteControl() {
   if (rcToggling.value) return;
   const desired = !remoteControlRunning.value;
-  if (!config.value.claude) config.value.claude = {};
-  config.value.claude.remoteControl = desired;
+  ensureClaudeProvider().remoteControl = desired;
   rcToggling.value = true;
   savingConfig.value = true;
   try {
@@ -452,7 +459,7 @@ const allCommands = computed(() => {
 });
 
 async function loadSkills() {
-  try { customSkills.value = ((await (await fetch("/api/skills")).json()).skills || []); } catch {}
+  try { customSkills.value = ((await (await apiFetch("/api/skills")).json()).skills || []); } catch {}
 }
 
 function handleSlashCommand(name: string): boolean {
@@ -522,7 +529,7 @@ function onWindowKeydown(e: KeyboardEvent) {
 }
 
 const currentModel = computed(() => {
-  const m = config.value?.claude?.model || "";
+  const m = config.value?.session?.model || "";
   return m.replace("claude-", "").replace(/-\d+$/, "") || "\u2014";
 });
 
@@ -741,10 +748,10 @@ onUnmounted(() => {
           </button>
           <div v-if="showModes" class="popup modes-popup">
             <div class="popup-section-label">Model</div>
-            <button v-for="m in models" :key="m" class="popup-item" :class="{ active: config.claude?.model === m }" @click="updateModel(m)">
+            <button v-for="m in models" :key="m" class="popup-item" :class="{ active: config.session?.model === m }" @click="updateModel(m)">
               <i class="bi bi-cpu"></i>
               <span>{{ m.replace('claude-', '').replace(/-\d+$/, '') }}</span>
-              <i v-if="config.claude?.model === m" class="bi bi-check2 ms-auto"></i>
+              <i v-if="config.session?.model === m" class="bi bi-check2 ms-auto"></i>
             </button>
             <div class="popup-divider"></div>
             <div class="popup-section-label">Thinking</div>
