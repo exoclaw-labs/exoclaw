@@ -18,25 +18,54 @@ pnpm lint              # eslint src
 # Docker (production)
 docker build -t exoclaw .
 docker compose up -d
-docker exec -it <container> claude login   # first-time auth
+docker exec -it <container> claude login          # first-time auth
+docker exec -it <container> exoclawctl status     # list supervised services
+docker exec -it <container> exoclawctl upgrade claude  # runtime Claude Code upgrade
 ```
 
-The Dockerfile is a multi-stage build: stage 1 builds the web SPA (Vite), stage 2 compiles the TypeScript server, installs claude-code + agent-browser globally, and runs as a non-root `agent` user.
+The Dockerfile is a multi-stage build: stage 1 builds the web SPA (Vite), stage 2 compiles the TypeScript server, installs claude-code + agent-browser globally, and runs as a non-root `agent` user. PID 1 inside the container is the custom supervisor (`src/supervisor/`), which spawns and manages the gateway and other services.
 
 ## Architecture
 
 ExoClaw is a gateway that wraps a persistent Claude Code session and exposes it through multiple channel interfaces. One container = one human's agent.
 
+### Container Supervisor (`src/supervisor/`)
+
+PID 1 in the container is the exoclaw supervisor — a small, tailored init system that manages services as "units" with a state machine, control socket, and `exoclawctl` CLI. It is NOT supervisord; it is deliberately narrow.
+
+**Built-in units (hardcoded, not user-configurable):**
+- `gateway` — `node /app/dist/index.js`. `restart: always`, readiness via `GET /health`.
+- `remote-control` — `claude remote-control`. `restart: on-failure`. Auto-started when `ENABLE_REMOTE_CONTROL=true` or `config.session.providers.claude.remoteControl === true`. URL is extracted from stdout and surfaced via `GET /api/status` and `exoclawctl status remote-control`.
+
+**Custom user-defined units** live under `config.services` in `~/.exoclaw/config.yml` (schema in [src/schemas.ts](src/schemas.ts) → `CustomServiceSpecSchema`). Full `UnitSpec` minus PID-1-dangerous fields. An optional `schedule` field (standard 5-field cron, ISO datetime, or `now + Nm`) makes the supervisor fire `start()` on the cron tick — useful for "run this indexer every 15 minutes" style jobs. Scheduled services should use `restart: "no"` and `autoStart: false`; they run to completion and the next tick restarts them.
+
+**Control channel**: Unix socket at `~/.exoclaw/ctl.sock`, mode 0600, no auth (single-UID container). Protocol: newline-delimited JSON, one request per line. Used by both `exoclawctl` and the gateway's `SupervisorClient` ([src/supervisor/client.ts](src/supervisor/client.ts)).
+
+**`exoclawctl`** (installed as `/usr/local/bin/exoclawctl` via a bash shim):
+```
+exoclawctl ping
+exoclawctl status [unit]
+exoclawctl start <unit>
+exoclawctl stop <unit>
+exoclawctl restart <unit>
+exoclawctl logs <unit> [-f] [-n N]
+exoclawctl upgrade claude [--no-gateway-restart]
+```
+
+**Upgrade flow** (`exoclawctl upgrade claude`): supervisor stops `remote-control` if running, runs `sudo -n /app/scripts/upgrade-claude.sh` (covered by existing sudoers `/app/scripts/*.sh` glob), verifies the new version, restarts `gateway`, then restarts `remote-control` if it was running pre-upgrade. 120s timeout, in-memory mutex prevents concurrent upgrades.
+
+**Crash-loop quarantine**: a unit that crashes 10 times within 5 minutes enters `failed` state permanently. Auto-restart is disabled until explicit `exoclawctl start <unit>`. Prevents log-spam.
+
+**HTTP API** (`/api/services/*`) proxies the control socket: `GET /api/services`, `GET /api/services/:unit`, `POST /api/services/:unit/{start,stop,restart}`, `POST /api/services/upgrade` (body `{target:"claude"}`). All protected by the Bearer middleware.
+
 ### Session Backends
 
-Two session backends, selected by environment:
+The gateway uses a `SessionBackend` interface ([src/session-backend.ts](src/session-backend.ts)) to abstract the LLM provider. A factory function (`createSessionBackend()`) resolves the provider from `config.session.provider` at startup. Currently one adapter:
 
-- **Agent SDK** (`claude-sdk.ts`, default): Uses `@anthropic-ai/claude-agent-sdk`. Two sub-modes:
+- **Claude Adapter** ([src/claude-sdk.ts](src/claude-sdk.ts), `provider: "claude"`): Uses `@anthropic-ai/claude-agent-sdk`. Two sub-modes:
   - **Stable**: `query()` per message with session resume. Full MCP server support, system prompts, agents.
   - **V2** (`CLAUDE_SDK_V2=true`): `unstable_v2_createSession()` for persistent in-process session. Lower latency, limited config.
-  Includes in-process MCP servers for `session_search`, `clarify`, and `request_approval`.
-
-- **tmux** (`claude.ts`): Persistent tmux session with `claude --remote-control --continue`. Primary I/O via JSONL session file polling, fallback to tmux `send-keys` + `capture-pane` screen scraping. Auto-accepts interactive prompts (login, workspace trust, permissions). Respawns on crash after 5s delay.
+  Includes in-process MCP servers for `session_search`, `clarify`, and `request_approval`. Remote control is no longer spawned from here — the supervisor owns that subprocess.
 
 ### Core Loop
 
@@ -75,11 +104,17 @@ When Claude finishes a turn, `onTurnComplete()` fires (non-blocking):
 
 ### Config System (config-store.ts)
 
-Persistent storage in `~/.exoclaw/` (Docker volume):
-- `config.json` — non-sensitive settings (model, name, channels, MCP servers, budget, etc.)
-- `secrets.json` — tokens and keys, never exposed via API
+Persistent storage in `~/.exoclaw/config.yml` (Docker volume). YAML format with inline `!secret` tags for sensitive values (no separate secrets file). Key structure:
 
-API responses mask secrets with `••••••`. `saveConfigSafe()` restores real values from disk when saving, so masked values in PUT requests don't overwrite actual secrets.
+- `session.provider` — LLM provider (`"claude"`, `"openai"`, `"ollama"`, etc.)
+- `session.model` — model identifier
+- `session.providers.<name>` — provider-specific options (e.g., `providers.claude.permissionMode`)
+- `mcpServers` — top-level MCP server definitions (injected into any provider that supports them)
+- `channels`, `peers`, `services`, etc. — unchanged
+
+Secrets are tagged with `!secret` in YAML and auto-detected by field name (`apiToken`, `botToken`, etc.). API responses mask secrets with `••••••`. `saveConfigSafe()` restores real values from disk when saving, so masked values in PUT requests don't overwrite actual secrets.
+
+Auto-migrates from legacy `config.json` + `secrets.json` on first boot.
 
 ### Cron Scheduler (cron.ts)
 
@@ -117,12 +152,12 @@ SQLite with WAL mode. Tables: `sessions`, `messages`, `messages_fts` (FTS5 with 
 
 ```
 src/
-  index.ts              entry point — loads config, starts server, registers channels
+  index.ts              gateway entry point — spawned by the supervisor
   server.ts             Hono app with OpenAPI routes, middleware, WebSocket/terminal upgrades
-  claude.ts             tmux session backend
-  claude-sdk.ts         Agent SDK session backend (default)
-  config-store.ts       config.json + secrets.json persistence
-  schemas.ts            Zod schemas for config validation (GatewayConfig, etc.)
+  session-backend.ts    SessionBackend interface, adapter factory, shared types
+  claude-sdk.ts         Claude adapter (implements SessionBackend)
+  config-store.ts       YAML config.yml persistence with !secret tags
+  schemas.ts            Zod schemas for config validation (GatewayConfig, SessionConfig, etc.)
   channel-server.ts     MCP server (reply, session_search, clarify, request_approval)
   channel-health.ts     per-channel health monitoring
   content-scanner.ts    inbound/outbound safety scanner
@@ -148,6 +183,18 @@ src/
   claude-md.ts          CLAUDE.md workspace sync
   workspace-scanner.ts  workspace security scanning
   constants.ts          shared constants
+
+  supervisor/           custom PID 1 init — service units, control socket, exoclawctl
+    index.ts              supervisor entry point (PID 1 main)
+    unit.ts               Unit class, state machine, readiness probes, ring buffer
+    units.ts              built-in specs (gateway, remote-control) + custom-from-config loader
+    control.ts            Unix-socket control server (NDJSON protocol dispatch)
+    client.ts             SupervisorClient — used by exoclawctl and the gateway
+    cli.ts                exoclawctl CLI entry (compiled to dist/supervisor/cli.js)
+    upgrade.ts            upgrade-claude orchestrator
+    protocol.ts           shared request/response types, op names, error codes
+    cron-expr.ts          standalone cron expression parser (5-field + ISO/relative)
+    log.ts                tagged stderr logger + child-output forwarder
 
   channels/
     discord.ts          Discord bot adapter
@@ -229,6 +276,12 @@ Terminal WebSocket at `/ws/terminal` — persistent PTY session with `{ type: "r
 | GET/POST | `/api/approvals` | Yes | List/resolve approval requests |
 | GET | `/api/channels/health` | Yes | Channel connection status |
 | GET | `/api/workspace/alerts` | Yes | Workspace security alerts |
+| GET | `/api/services` | Yes | List all supervisor units |
+| GET | `/api/services/:unit` | Yes | Unit status + extras (remote-control URL, etc.) |
+| POST | `/api/services/:unit/start` | Yes | Start a unit |
+| POST | `/api/services/:unit/stop` | Yes | Stop a unit |
+| POST | `/api/services/:unit/restart` | Yes | Restart a unit |
+| POST | `/api/services/upgrade` | Yes | Run `upgrade claude` through the supervisor |
 | GET/POST | `/api/sops/*` | Yes | SOP definitions and runs |
 | GET | `/api/daily-notes` | Yes | Daily memory notes |
 | GET | `/api/auth/status` | No | Auth check |
