@@ -22,11 +22,11 @@
 
 import { type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 import { scanForLeaks } from "../content-scanner.js";
 import type { Estop } from "../estop.js";
 
-export function setupWebSocket(server: Server, claude: Claude, apiToken?: string, estop?: Estop): void {
+export function setupWebSocket(server: Server, claude: SessionBackend, apiToken?: string, estop?: Estop): void {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {

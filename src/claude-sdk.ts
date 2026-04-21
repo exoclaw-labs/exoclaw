@@ -15,7 +15,8 @@
  * in-process SDK MCP servers — no separate channel-server process needed.
  * (Only available in stable mode; V2 lacks mcpServers support.)
  *
- * Remote control is an optional background process gated by ENABLE_REMOTE_CONTROL.
+ * Remote control is owned by the supervisor (src/supervisor/) and is no longer
+ * spawned from here.
  */
 
 import {
@@ -36,18 +37,17 @@ import type {
   McpServerConfig,
   McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
-import { spawn, execSync, type ChildProcess } from "child_process";
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { z } from "zod";
+import type { SessionBackend } from "./session-backend.js";
 import { SessionDB } from "./session-db.js";
-import { PROJECT_DIR_SUFFIX } from "./constants.js";
 
 // ── Types ──
 
 export interface McpServerDef {
   enabled?: boolean;
-  type?: "stdio" | "http";
+  type?: "stdio" | "http" | "sse";
   command?: string;
   args?: string[];
   url?: string;
@@ -55,17 +55,16 @@ export interface McpServerDef {
   env?: Record<string, string>;
 }
 
-export interface ClaudeConfig {
-  name?: string;
+export interface SessionConfig {
+  provider: string;
   model: string;
-  permissionMode: string;
   systemPrompt?: string;
-  mcpServers?: Record<string, McpServerDef>;
-  agents?: Record<string, { description: string; prompt: string }>;
-  allowedTools?: string[];
-  disallowedTools?: string[];
-  thinkingBudget?: number;
-  remoteControl?: boolean;
+  maxTurns?: number;
+  providers?: Record<string, Record<string, any>>;
+}
+
+function claudeProvider(config: SessionConfig): Record<string, any> {
+  return config.providers?.claude || {};
 }
 
 // Callback types for interactive tools (clarify / request_approval)
@@ -75,13 +74,13 @@ export type ApprovalHandler = (action: string, detail?: string, riskLevel?: stri
 /** Whether to use the unstable V2 session API. */
 const USE_V2 = process.env.CLAUDE_SDK_V2 === "true";
 
-export class Claude {
-  private config: ClaudeConfig;
+export class Claude implements SessionBackend {
+  private config: SessionConfig;
+  public mcpServers: Record<string, McpServerDef>;
+  private _name: string | null = null;
   private _busy = false;
   private _alive = false;
   private _sessionId: string | null = null;
-  private _remoteControlUrl: string | null = null;
-  private _remoteControlProc: ChildProcess | null = null;
   private _activeQuery: Query | null = null;
 
   // V2 session state
@@ -106,11 +105,14 @@ export class Claude {
   /** Set by the gateway to handle approval tool calls from Claude. */
   onApproval: ApprovalHandler | null = null;
 
+  set name(n: string) { this._name = n; }
+
   /** In-process MCP server — created once, reused across queries (stable mode only). */
   private gatewayMcpServer: McpSdkServerConfigWithInstance | null = null;
 
-  constructor(config: ClaudeConfig) {
+  constructor(config: SessionConfig, mcpServers: Record<string, McpServerDef> = {}) {
     this.config = config;
+    this.mcpServers = mcpServers;
     if (!USE_V2) {
       this.gatewayMcpServer = this.buildGatewayMcpServer();
     }
@@ -121,78 +123,21 @@ export class Claude {
     this._alive = true;
     this.loadSavedSessionId();
 
-    // Mirror config mcpServers into workspace/.mcp.json so Claude Code (and the
-    // user via the editor) see the same set of servers the SDK is using.
-    this.writeMcpConfig(this.config.mcpServers || {});
-
     if (USE_V2) {
       this.initV2Session();
-    }
-
-    if (process.env.ENABLE_REMOTE_CONTROL === "true" || this.config.remoteControl) {
-      this.startRemoteControl();
     }
 
     log("info", `Claude SDK session manager started (mode=${USE_V2 ? "v2" : "stable"})`);
   }
 
-  /**
-   * Write MCP servers to workspace/.mcp.json.
-   *
-   * Claude Code reads this file natively for project-scoped MCP servers.
-   * Exoclaw-managed servers (from config) are merged with any existing entries
-   * in .mcp.json (e.g. from `claude mcp add`). Our config wins on name collisions.
-   */
-  private writeMcpConfig(servers: Record<string, McpServerDef>): void {
-    const workspaceDir = join(process.env.HOME || "/tmp", "workspace");
-    try {
-      mkdirSync(workspaceDir, { recursive: true });
-    } catch { /* intentional */ }
-
-    // Fix ownership if workspace was created by root (stale Docker volume)
-    try {
-      writeFileSync(join(workspaceDir, ".mcp.json.probe"), "", { flag: "w" });
-      unlinkSync(join(workspaceDir, ".mcp.json.probe"));
-    } catch {
-      try { execSync(`sudo chown -R $(id -u):$(id -g) ${workspaceDir}`, { stdio: "ignore" }); } catch { /* best effort */ }
-    }
-
-    const path = join(workspaceDir, ".mcp.json");
-
-    // Read existing .mcp.json (may have been written by `claude mcp add` etc.)
-    let existing: Record<string, unknown> = {};
-    try {
-      const data = JSON.parse(readFileSync(path, "utf-8")) as { mcpServers?: Record<string, unknown> };
-      existing = data.mcpServers || {};
-    } catch { /* doesn't exist yet */ }
-
-    // Filter our config servers to only enabled ones, strip the 'enabled' field
-    const enabledServers: Record<string, unknown> = {};
-    for (const [name, def] of Object.entries(servers)) {
-      if (def.enabled === false) continue;
-      const rest = Object.fromEntries(Object.entries(def).filter(([k]) => k !== "enabled"));
-      enabledServers[name] = rest;
-    }
-
-    const allServers: Record<string, unknown> = {
-      ...existing,
-      ...enabledServers,
-    };
-
-    try {
-      writeFileSync(path, JSON.stringify({ mcpServers: allServers }, null, 2));
-    } catch (err) {
-      log("warn", `Failed to write .mcp.json: ${err}`);
-    }
-  }
-
   /** Initialize a V2 persistent session. */
   private initV2Session(): void {
+    const cp = claudeProvider(this.config);
     const opts: SDKSessionOptions = {
       model: this.config.model,
       permissionMode: "bypassPermissions",
-      allowedTools: this.config.allowedTools,
-      disallowedTools: this.config.disallowedTools,
+      allowedTools: cp.allowedTools,
+      disallowedTools: cp.disallowedTools,
       env: { ...process.env } as Record<string, string>,
     };
 
@@ -383,28 +328,30 @@ export class Claude {
     }
 
     // Add external MCP servers from config
-    if (this.config.mcpServers) {
-      for (const [name, def] of Object.entries(this.config.mcpServers)) {
-        if (def.enabled === false) continue;
-        if (def.type === "http" && def.url) {
-          mcpServers[name] = { type: "http", url: def.url, headers: def.headers };
-        } else if (def.command) {
-          mcpServers[name] = {
-            type: "stdio",
-            command: def.command,
-            args: def.args,
-            env: def.env,
-          };
-        }
+    for (const [name, def] of Object.entries(this.mcpServers)) {
+      if (def.enabled === false) continue;
+      if (def.type === "http" && def.url) {
+        mcpServers[name] = { type: "http", url: def.url, headers: def.headers };
+      } else if (def.type === "sse" && def.url) {
+        mcpServers[name] = { type: "sse", url: def.url, headers: def.headers };
+      } else if (def.command) {
+        mcpServers[name] = {
+          type: "stdio",
+          command: def.command,
+          args: def.args,
+          env: def.env,
+        };
       }
     }
+
+    const cp = claudeProvider(this.config);
 
     const options: Options = {
       model: this.config.model,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       mcpServers,
-      maxTurns: 25,
+      maxTurns: this.config.maxTurns ?? 25,
       cwd: join(process.env.HOME || "/home/agent", "workspace"),
       // Only load project-level settings (.claude/settings.json, CLAUDE.md)
       // Exclude "user" (~/.claude/settings.json) to prevent stale or
@@ -428,33 +375,33 @@ export class Claude {
     }
 
     // Agents
-    if (this.config.agents && Object.keys(this.config.agents).length > 0) {
-      options.agents = this.config.agents;
+    if (cp.agents && Object.keys(cp.agents).length > 0) {
+      options.agents = cp.agents;
     }
 
     // Tool permissions
-    if (this.config.allowedTools?.length) {
-      options.allowedTools = this.config.allowedTools;
+    if (cp.allowedTools?.length) {
+      options.allowedTools = cp.allowedTools;
     }
-    if (this.config.disallowedTools?.length) {
-      options.disallowedTools = this.config.disallowedTools;
+    if (cp.disallowedTools?.length) {
+      options.disallowedTools = cp.disallowedTools;
     }
 
     // Thinking budget
-    if (this.config.thinkingBudget !== undefined) {
-      if (this.config.thinkingBudget === 0) {
+    if (cp.thinkingBudget !== undefined) {
+      if (cp.thinkingBudget === 0) {
         options.thinking = { type: "disabled" };
       } else {
-        options.thinking = { type: "enabled", budgetTokens: this.config.thinkingBudget };
+        options.thinking = { type: "enabled", budgetTokens: cp.thinkingBudget };
       }
     }
 
     // Name for remote control prefix
-    if (this.config.name) {
+    if (this._name) {
       options.extraArgs = {
         ...options.extraArgs,
-        "name": this.config.name,
-        "remote-control-session-name-prefix": this.config.name,
+        "name": this._name,
+        "remote-control-session-name-prefix": this._name,
       };
     }
 
@@ -562,80 +509,6 @@ export class Claude {
     });
   }
 
-  // ── Remote control (optional background process) ──
-
-  private startRemoteControl(): void {
-    // Stop any existing process first
-    if (this._remoteControlProc) {
-      this.stopRemoteControl();
-    }
-
-    const claudeBin = process.env.CLAUDE_BIN || "/usr/local/bin/claude";
-    const args = ["remote-control"];
-    if (this.config.name) {
-      args.push("--name", this.config.name);
-    }
-
-    log("info", `Starting remote control: ${claudeBin} ${args.join(" ")}`);
-    const proc = spawn(claudeBin, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
-      cwd: join(process.env.HOME || "/home/agent", "workspace"),
-    });
-    this._remoteControlProc = proc;
-
-    // Auto-accept the "Enable Remote Control? (y/n)" prompt
-    try {
-      proc.stdin?.write("y\n");
-      proc.stdin?.end();
-    } catch { /* intentional */ }
-
-    const parseOutput = (data: Buffer) => {
-      const text = data.toString();
-      // Capture the remote control URL
-      const envMatch = text.match(/environment=(env_[a-zA-Z0-9]+)/);
-      if (envMatch) {
-        this._remoteControlUrl = `https://claude.ai/code?environment=${envMatch[1]}`;
-        log("info", `Remote control URL: ${this._remoteControlUrl}`);
-      }
-      const urlMatch = text.match(/(https:\/\/claude\.ai\/code\/remote-control[^\s]*)/);
-      if (urlMatch) {
-        this._remoteControlUrl = urlMatch[1];
-        log("info", `Remote control URL: ${this._remoteControlUrl}`);
-      }
-    };
-
-    proc.stdout?.on("data", parseOutput);
-    proc.stderr?.on("data", parseOutput);
-
-    proc.on("error", (err) => {
-      log("error", `Remote control process failed to start: ${err}`);
-      this._remoteControlProc = null;
-      this._remoteControlUrl = null;
-    });
-
-    proc.on("exit", (code) => {
-      log("warn", `Remote control process exited with code ${code}`);
-      this._remoteControlProc = null;
-      this._remoteControlUrl = null;
-    });
-  }
-
-  private stopRemoteControl(): void {
-    if (this._remoteControlProc) {
-      log("info", "Stopping remote control process");
-      const proc = this._remoteControlProc;
-      try { proc.kill("SIGTERM"); } catch { /* intentional */ }
-      // Give SIGTERM 2s, then SIGKILL
-      const forceKill = setTimeout(() => {
-        try { if (!proc.killed) proc.kill("SIGKILL"); } catch { /* intentional */ }
-      }, 2000);
-      proc.on("exit", () => clearTimeout(forceKill));
-      this._remoteControlProc = null;
-      this._remoteControlUrl = null;
-    }
-  }
-
   // ── Session persistence ──
 
   private get sessionFilePath(): string {
@@ -667,32 +540,16 @@ export class Claude {
   get busy(): boolean { return this._busy; }
   /** Always true — SDK provides clean structured I/O. */
   get usingChannel(): boolean { return true; }
-  get remoteControlUrl(): string | null { return this._remoteControlUrl; }
-  get remoteControlRunning(): boolean { return this._remoteControlProc !== null; }
 
   get activeSessionId(): string | null {
     return this._sessionId;
   }
 
   /** Update the in-memory config (e.g. after API config save). */
-  updateConfig(config: ClaudeConfig): void {
-    const rcWanted = config.remoteControl === true;
-    const rcRunning = this._remoteControlProc !== null;
-
+  updateConfig(config: SessionConfig, mcpServers?: Record<string, McpServerDef>): void {
     this.config = config;
-
-    // Mirror mcpServers into workspace/.mcp.json so disk state stays in sync
-    // with the exoclaw config.
-    this.writeMcpConfig(config.mcpServers || {});
-
-    // Start or stop remote control to match the new config
-    if (rcWanted && !rcRunning) {
-      this.startRemoteControl();
-    } else if (!rcWanted && rcRunning) {
-      this.stopRemoteControl();
-    }
-
-    log("info", `Config updated: model=${config.model}, remoteControl=${rcWanted}`);
+    if (mcpServers) this.mcpServers = mcpServers;
+    log("info", `Config updated: model=${config.model}`);
   }
 
   restart(): void {
@@ -739,7 +596,6 @@ export class Claude {
     this._v2Session = null;
     this._alive = false;
     this._busy = false;
-    this.stopRemoteControl();
     log("info", "Claude session closed");
   }
 }

@@ -6,11 +6,11 @@
  * Env: TELEGRAM_BOT_TOKEN
  */
 
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 
 let API = "";
 
-export function startTelegram(claude: Claude): void {
+export function startTelegram(claude: SessionBackend): void {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     log("warn", "TELEGRAM_BOT_TOKEN not set");
@@ -21,7 +21,7 @@ export function startTelegram(claude: Claude): void {
   poll(claude);
 }
 
-async function poll(claude: Claude): Promise<void> {
+async function poll(claude: SessionBackend): Promise<void> {
   let offset = 0;
   while (true) {
     try {
@@ -48,7 +48,7 @@ async function poll(claude: Claude): Promise<void> {
   }
 }
 
-async function handleMessage(msg: any, claude: Claude): Promise<void> {
+async function handleMessage(msg: any, claude: SessionBackend): Promise<void> {
   const chatId = msg.chat.id;
   const prompt = (msg.text || "").trim();
   if (!prompt || prompt.startsWith("/start")) return;

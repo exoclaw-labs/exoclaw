@@ -10,7 +10,7 @@
  */
 
 import type { Context } from "hono";
-import type { Claude } from "./claude-sdk.js";
+import type { SessionBackend } from "./session-backend.js";
 
 const MODEL_NAME = "exoclaw";
 
@@ -28,7 +28,7 @@ interface ChatCompletionRequest {
 }
 
 /** Register OpenAI-compatible routes on the Hono app. */
-export function registerOpenAIRoutes(app: any, claude: Claude): void {
+export function registerOpenAIRoutes(app: any, claude: SessionBackend): void {
   // GET /v1/models — list available models
   app.get("/v1/models", (c: Context) => {
     return c.json({
@@ -80,7 +80,7 @@ export function registerOpenAIRoutes(app: any, claude: Claude): void {
 
 async function nonStreamResponse(
   c: Context,
-  claude: Claude,
+  claude: SessionBackend,
   prompt: string,
   requestId: string,
   created: number,
@@ -116,7 +116,7 @@ async function nonStreamResponse(
 
 async function streamResponse(
   c: Context,
-  claude: Claude,
+  claude: SessionBackend,
   prompt: string,
   requestId: string,
   created: number,

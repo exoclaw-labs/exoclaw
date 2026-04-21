@@ -10,7 +10,7 @@ import { z } from "@hono/zod-openapi";
 
 export const McpServerDefSchema = z.object({
   enabled: z.boolean().optional(),
-  type: z.enum(["stdio", "http"]).optional(),
+  type: z.enum(["stdio", "http", "sse"]).optional(),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   url: z.string().optional(),
@@ -18,21 +18,46 @@ export const McpServerDefSchema = z.object({
   env: z.record(z.string()).optional(),
 }).passthrough();
 
-export const ClaudeConfigSchema = z.object({
-  name: z.string().optional(),
-  model: z.string(),
-  permissionMode: z.string(),
+export const SessionConfigSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
   systemPrompt: z.string().optional(),
-  mcpServers: z.record(McpServerDefSchema).optional(),
-  agents: z.record(z.object({
-    description: z.string(),
-    prompt: z.string(),
-  })).optional(),
-  allowedTools: z.array(z.string()).optional(),
-  disallowedTools: z.array(z.string()).optional(),
-  thinkingBudget: z.number().int().min(0).optional(),
-  extraFlags: z.array(z.string()).optional(),
-  remoteControl: z.boolean().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  providers: z.record(z.record(z.unknown())).optional(),
+}).passthrough();
+
+/**
+ * Custom user-defined service spec for the supervisor.
+ *
+ * Built-in units (`gateway`, `remote-control`) are hardcoded in
+ * src/supervisor/units.ts and are NOT configurable here — this schema is
+ * additive only, for extra services the user wants supervised.
+ */
+export const CustomServiceSpecSchema = z.object({
+  description: z.string().optional(),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  env: z.record(z.string()).optional(),
+  restart: z.enum(["no", "on-failure", "always"]).optional(),
+  stopGraceMs: z.number().int().positive().optional(),
+  startTimeoutMs: z.number().int().positive().optional(),
+  autoStart: z.boolean().optional(),
+  /** Cron schedule ("*\/15 * * * *") or one-shot ISO/relative ("now + 1h"). */
+  schedule: z.string().optional(),
+  readiness: z.union([
+    z.object({
+      type: z.literal("http"),
+      url: z.string().url(),
+      timeoutMs: z.number().int().positive().optional(),
+      intervalMs: z.number().int().positive().optional(),
+    }),
+    z.object({
+      type: z.literal("stdout-regex"),
+      pattern: z.string().min(1),
+      timeoutMs: z.number().int().positive().optional(),
+    }),
+  ]).optional(),
 }).passthrough();
 
 export const SelfImprovementConfigSchema = z.object({
@@ -96,15 +121,22 @@ export const TunnelConfigSchema = z.object({
   args: z.array(z.string()).optional(),
 }).passthrough();
 
+export const PeerSchema = z.object({
+  url: z.string().min(1),
+  token: z.string().optional(),
+  enabled: z.boolean().optional(),
+  description: z.string().optional(),
+}).passthrough();
+
 export const GatewayConfigSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().positive(),
   host: z.string().min(1),
   apiToken: z.string().optional(),
-  claudeApiToken: z.string().optional(),
   setupComplete: z.boolean().optional(),
   browserTool: z.enum(["browser-use", "agent-browser", "none"]).optional(),
-  claude: ClaudeConfigSchema,
+  session: SessionConfigSchema,
+  mcpServers: z.record(McpServerDefSchema).optional(),
   channels: z.record(ChannelConfigSchema).optional(),
   selfImprovement: SelfImprovementConfigSchema.optional(),
   cron: CronConfigSchema.optional(),
@@ -117,6 +149,9 @@ export const GatewayConfigSchema = z.object({
   budget: BudgetConfigSchema.optional(),
   queue: QueueConfigSchema.optional(),
   tunnel: TunnelConfigSchema.optional(),
+  peers: z.record(PeerSchema).optional(),
+  /** Extra user-defined services managed by the supervisor (adds to built-ins). */
+  services: z.record(CustomServiceSpecSchema).optional(),
 }).passthrough();
 
 /** Inferred TypeScript type from the gateway config schema. */

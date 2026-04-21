@@ -4,13 +4,13 @@
  * Env: DISCORD_BOT_TOKEN
  */
 
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 
 let BOT_TOKEN = "";
 const API = "https://discord.com/api/v10";
 let botUserId: string | null = null;
 
-export function startDiscord(claude: Claude): void {
+export function startDiscord(claude: SessionBackend): void {
   BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
   if (!BOT_TOKEN) {
     log("warn", "DISCORD_BOT_TOKEN not set");
@@ -20,7 +20,7 @@ export function startDiscord(claude: Claude): void {
   connectGateway(claude).catch((err) => log("error", `Gateway failed: ${err}`));
 }
 
-async function connectGateway(claude: Claude): Promise<void> {
+async function connectGateway(claude: SessionBackend): Promise<void> {
   const res = await fetch(`${API}/gateway/bot`, { headers: { authorization: `Bot ${BOT_TOKEN}` } });
   const { url } = (await res.json()) as { url: string };
   const ws = new (await import("ws")).default(`${url}?v=10&encoding=json`);
@@ -63,7 +63,7 @@ async function connectGateway(claude: Claude): Promise<void> {
   ws.on("error", (err: Error) => log("error", `WS error: ${err.message}`));
 }
 
-async function handleMessage(msg: any, claude: Claude): Promise<void> {
+async function handleMessage(msg: any, claude: SessionBackend): Promise<void> {
   if (msg.author.bot) return;
   const isDM = !msg.guild_id;
   const isMention = msg.mentions?.some((m: any) => m.id === botUserId);

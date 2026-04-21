@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { fetchConfig, saveConfig, fetchStatus, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgentFile, deleteSubAgent, deleteSubAgentFile } from "../composables/useApi";
+import { fetchConfig, saveConfig, fetchStatus, fetchClaudeFiles, saveClaudeFile, fetchSubAgents, saveSubAgentFile, deleteSubAgent, deleteSubAgentFile, apiFetch } from "../composables/useApi";
 import Setup from "./Setup.vue";
 
 const route = useRoute();
@@ -23,7 +23,7 @@ const thinkingLevel = ref("");
 
 async function loadSkills() {
   try {
-    const res = await fetch("/api/skills");
+    const res = await apiFetch("/api/skills");
     skills.value = (await res.json()).skills || [];
   } catch {}
 }
@@ -36,7 +36,7 @@ function selectSkill(name: string) {
 
 async function saveSkill() {
   if (!activeSkill.value) return;
-  await fetch(`/api/skills/${encodeURIComponent(activeSkill.value)}`, {
+  await apiFetch(`/api/skills/${encodeURIComponent(activeSkill.value)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ content: skillContent.value }),
@@ -48,7 +48,7 @@ async function saveSkill() {
 async function addSkill() {
   const name = newSkillName.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
   if (!name) return;
-  await fetch(`/api/skills/${encodeURIComponent(name)}`, {
+  await apiFetch(`/api/skills/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ content: `# ${name}\n\nDescribe this skill...\n` }),
@@ -60,7 +60,7 @@ async function addSkill() {
 
 async function deleteSkill(name: string) {
   if (!confirm(`Delete skill "${name}"?`)) return;
-  await fetch(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await apiFetch(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (activeSkill.value === name) { activeSkill.value = null; skillContent.value = ""; }
   await loadSkills();
 }
@@ -74,7 +74,7 @@ function handleDrop(e: DragEvent) {
     const name = file.name.replace(/\.md$/i, "").replace(/^SKILL$/i, "skill").toLowerCase().replace(/[^a-z0-9-]/g, "-");
     const reader = new FileReader();
     reader.onload = async () => {
-      await fetch(`/api/skills/${encodeURIComponent(name)}`, {
+      await apiFetch(`/api/skills/${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: reader.result as string }),
@@ -237,14 +237,14 @@ const tunnelStatus = ref<{ provider: string; running: boolean; publicUrl: string
 const tunnelRestarting = ref(false);
 
 async function loadTunnelStatus() {
-  try { tunnelStatus.value = await (await fetch("/api/tunnel")).json(); } catch {}
+  try { tunnelStatus.value = await (await apiFetch("/api/tunnel")).json(); } catch {}
 }
 
 async function restartTunnel() {
   tunnelRestarting.value = true;
   try {
     await saveConfig(config.value);
-    await fetch("/api/tunnel/restart", { method: "POST" });
+    await apiFetch("/api/tunnel/restart", { method: "POST" });
     await new Promise(r => setTimeout(r, 2000));
     await loadTunnelStatus();
   } catch {}
@@ -268,14 +268,21 @@ function applyJson() {
   }
 }
 
+function ensureClaudeProvider() {
+  if (!config.value.session) config.value.session = { provider: "claude", model: "claude-sonnet-4-6" };
+  if (!config.value.session.providers) config.value.session.providers = {};
+  if (!config.value.session.providers.claude) config.value.session.providers.claude = {};
+  return config.value.session.providers.claude;
+}
+
 async function load() {
   loading.value = true;
   try {
     const [cfg, files] = await Promise.all([fetchConfig(), fetchClaudeFiles()]);
     // remoteControl defaults to false (must be explicitly enabled)
-    if (cfg.claude && cfg.claude.remoteControl === undefined) cfg.claude.remoteControl = false;
+    if (cfg.session?.providers?.claude && cfg.session.providers.claude.remoteControl === undefined) cfg.session.providers.claude.remoteControl = false;
     // Extract thinking budget
-    const tb = cfg.claude?.thinkingBudget;
+    const tb = cfg.session?.providers?.claude?.thinkingBudget;
     thinkingLevel.value = tb !== undefined ? String(tb) : "";
     config.value = cfg;
     claudeFiles.value = files;
@@ -313,8 +320,7 @@ async function waitForRcState(expected: boolean, timeoutMs = 8000) {
 async function toggleRemoteControl() {
   if (rcToggling.value) return;
   const desired = !rcRunning.value;
-  if (!config.value.claude) config.value.claude = {};
-  config.value.claude.remoteControl = desired;
+  ensureClaudeProvider().remoteControl = desired;
   rcToggling.value = true;
   try {
     await saveConfig(config.value);
@@ -323,7 +329,7 @@ async function toggleRemoteControl() {
     msg.value = { type: "danger", text: `Remote control toggle failed: ${e}` };
   }
   // Sync checkbox with actual state
-  if (config.value.claude) config.value.claude.remoteControl = rcRunning.value;
+  ensureClaudeProvider().remoteControl = rcRunning.value;
   rcToggling.value = false;
 }
 
@@ -354,10 +360,10 @@ async function onNameChange() {
     }
 
     // Update systemPrompt if it referenced the old name
-    if (config.value.claude && typeof config.value.claude.systemPrompt === "string") {
-      const sp = config.value.claude.systemPrompt as string;
+    if (config.value.session && typeof config.value.session.systemPrompt === "string") {
+      const sp = config.value.session.systemPrompt as string;
       const updatedSp = sp.replace(nameRegex, newName);
-      if (updatedSp !== sp) config.value.claude.systemPrompt = updatedSp;
+      if (updatedSp !== sp) config.value.session.systemPrompt = updatedSp;
     }
 
     for (const file of changedFiles) {
@@ -381,8 +387,7 @@ async function autoSave() {
   autoSaveTimer = setTimeout(async () => {
     saving.value = true;
     try {
-      if (!config.value.claude) config.value.claude = {};
-      config.value.claude.thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
+      ensureClaudeProvider().thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
       await saveConfig(config.value);
       msg.value = { type: "success", text: "Saved." };
       setTimeout(() => { if (msg.value?.text === "Saved.") msg.value = null; }, 2000);
@@ -404,8 +409,7 @@ async function handleSave() {
     if (msg.value) { saving.value = false; return; }
 
     // Sync thinking budget
-    if (!config.value.claude) config.value.claude = {};
-    config.value.claude.thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
+    ensureClaudeProvider().thinkingBudget = thinkingLevel.value ? parseInt(thinkingLevel.value, 10) : undefined;
 
     await saveConfig(config.value);
 
@@ -515,7 +519,7 @@ onMounted(() => { load(); pollRcState(); });
             <div class="row g-3">
               <div class="col-md-4">
                 <label class="form-label small text-body-secondary">Model</label>
-                <select v-model="config.claude.model" class="form-select form-select-sm font-monospace" @change="autoSave">
+                <select v-model="config.session.model" class="form-select form-select-sm font-monospace" @change="autoSave">
                   <option value="claude-opus-4-6">claude-opus-4-6</option>
                   <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                   <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
@@ -580,12 +584,17 @@ onMounted(() => { load(); pollRcState(); });
                 <label class="form-label small text-body-secondary">Tunnel Name</label>
                 <input v-model="config.tunnel.tunnelName" class="form-control form-control-sm font-monospace" placeholder="my-tunnel" />
               </div>
+              <div class="col-md-6" v-if="config.tunnel?.provider === 'tailscale'">
+                <label class="form-label small text-body-secondary">Hostname</label>
+                <input v-model="config.tunnel.tunnelName" class="form-control form-control-sm font-monospace" placeholder="exoclaw" />
+              </div>
             </div>
 
-            <!-- Token (cloudflare, ngrok) -->
-            <div v-if="config.tunnel?.provider === 'cloudflare' || config.tunnel?.provider === 'ngrok'" class="mb-3">
-              <label class="form-label small text-body-secondary">Auth Token</label>
-              <input v-model="config.tunnel.token" type="password" class="form-control form-control-sm font-monospace" placeholder="Token for the provider" />
+            <!-- Token (cloudflare, ngrok, tailscale) -->
+            <div v-if="config.tunnel?.provider === 'cloudflare' || config.tunnel?.provider === 'ngrok' || config.tunnel?.provider === 'tailscale'" class="mb-3">
+              <label class="form-label small text-body-secondary">{{ config.tunnel?.provider === 'tailscale' ? 'Auth Key' : 'Auth Token' }}</label>
+              <input v-model="config.tunnel.token" type="password" class="form-control form-control-sm font-monospace"
+                :placeholder="config.tunnel?.provider === 'tailscale' ? 'tskey-auth-...' : 'Token for the provider'" />
             </div>
 
             <!-- Custom command -->
@@ -601,7 +610,9 @@ onMounted(() => { load(); pollRcState(); });
             <!-- Tailscale info -->
             <div v-if="config.tunnel?.provider === 'tailscale'" class="text-body-secondary small mb-3">
               <i class="bi bi-info-circle me-1"></i>
-              Tailscale Funnel exposes port {{ config.port || 3000 }} to the internet via your tailnet. Make sure <code>tailscale</code> is installed and authenticated in the container.
+              Install: <code>docker exec -it &lt;name&gt; sudo /app/scripts/install-tailscale.sh</code><br/>
+              Paste an auth key above and set a hostname, then click Save &amp; Restart.
+              Funnel must be enabled in your <a href="https://login.tailscale.com/admin/acls" target="_blank">tailnet ACLs</a>.
             </div>
 
             <!-- Apply button -->
@@ -629,7 +640,7 @@ onMounted(() => { load(); pollRcState(); });
           <div class="row g-3 mb-3">
             <div class="col-md-4">
               <label class="form-label small text-body-secondary">Model</label>
-              <select v-model="config.claude.model" class="form-select form-select-sm font-monospace" @change="autoSave">
+              <select v-model="config.session.model" class="form-select form-select-sm font-monospace" @change="autoSave">
                 <option value="claude-opus-4-6">claude-opus-4-6</option>
                 <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                 <option value="claude-haiku-4-5">claude-haiku-4-5</option>

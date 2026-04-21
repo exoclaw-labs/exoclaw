@@ -10,7 +10,7 @@
  * Claude Code first: the actual session is a tmux process we can kill.
  */
 
-import type { Claude } from "./claude-sdk.js";
+import type { SessionBackend } from "./session-backend.js";
 import type { CronScheduler } from "./cron.js";
 import type { AuditLogger } from "./audit.js";
 
@@ -26,11 +26,11 @@ export interface EstopState {
 
 export class Estop {
   private _state: EstopState = { active: false };
-  private claude: Claude;
+  private claude: SessionBackend;
   private scheduler: CronScheduler | null;
   private audit: AuditLogger | null;
 
-  constructor(claude: Claude, scheduler?: CronScheduler, audit?: AuditLogger) {
+  constructor(claude: SessionBackend, scheduler?: CronScheduler, audit?: AuditLogger) {
     this.claude = claude;
     this.scheduler = scheduler || null;
     this.audit = audit || null;

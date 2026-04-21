@@ -76,6 +76,7 @@ services:
       <<: *claude-env
     volumes:
       - exoclaw-data:/home/agent
+    networks: [exonet]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw 1})"]
       interval: 30s
@@ -91,12 +92,45 @@ services:
     shm_size: "2gb"
     environment:
       <<: *claude-env
+    networks: [exonet]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw 1})"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
+
+# Peer wiring between containers
+# -------------------------------
+# Each exoclaw container exposes a POST /mcp endpoint that speaks MCP-over-HTTP.
+# Register peer gateways in each container's config (~/.exoclaw/config.json) under
+# the top-level `peers` key — they'll appear to Claude as `mcp__peer-<name>__send_message`
+# and `mcp__peer-<name>__get_status` tools automatically.
+#
+# Example: in the `exoclaw` container's config.json:
+#
+#   "peers": {
+#     "shortlived": {
+#       "url": "http://shortlived:8080/mcp",
+#       "token": "<shortlived's apiToken>"
+#     }
+#   }
+#
+# And the reverse in `shortlived`'s config.json:
+#
+#   "peers": {
+#     "exoclaw": {
+#       "url": "http://exoclaw:8080/mcp",
+#       "token": "<exoclaw's apiToken>"
+#     }
+#   }
+#
+# Both containers sit on the shared `exonet` bridge network so they resolve each
+# other by service name. No host ports are required for peer traffic.
+
+networks:
+  exonet:
+    driver: bridge
 
 volumes:
   exoclaw-data:

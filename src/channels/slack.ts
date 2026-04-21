@@ -6,7 +6,7 @@
 
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Context } from "hono";
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 
 let BOT_TOKEN = "";
 let SIGNING_SECRET = "";
@@ -18,7 +18,7 @@ export function startSlack(): void {
   else log("info", "Slack channel enabled");
 }
 
-export async function handleSlackEvent(c: Context, claude: Claude): Promise<Response> {
+export async function handleSlackEvent(c: Context, claude: SessionBackend): Promise<Response> {
   const body = await c.req.text();
   if (!body) return c.text("Bad request", 400);
 
@@ -41,7 +41,7 @@ export async function handleSlackEvent(c: Context, claude: Claude): Promise<Resp
   return c.text("", 200);
 }
 
-async function processEvent(event: any, claude: Claude): Promise<void> {
+async function processEvent(event: any, claude: SessionBackend): Promise<void> {
   if (!event || event.bot_id) return;
   if (event.type !== "message" && event.type !== "app_mention") return;
 

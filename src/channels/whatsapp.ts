@@ -18,7 +18,7 @@
  */
 
 import type { Context } from "hono";
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 import { scanForLeaks } from "../content-scanner.js";
 
 const TOKEN = process.env.WHATSAPP_TOKEN || "";
@@ -49,7 +49,7 @@ export function handleWhatsAppVerify(c: Context): Response {
 }
 
 /** Handle incoming webhook events (POST /whatsapp). */
-export async function handleWhatsAppEvent(c: Context, claude: Claude): Promise<Response> {
+export async function handleWhatsAppEvent(c: Context, claude: SessionBackend): Promise<Response> {
   const body = await c.req.json();
 
   // Ack immediately
@@ -69,7 +69,7 @@ export async function handleWhatsAppEvent(c: Context, claude: Claude): Promise<R
   return c.json({ status: "ok" });
 }
 
-async function processMessage(msg: any, claude: Claude): Promise<void> {
+async function processMessage(msg: any, claude: SessionBackend): Promise<void> {
   if (!msg || msg.type !== "text" || !msg.text?.body) return;
 
   const from = msg.from;    // sender phone number

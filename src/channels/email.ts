@@ -20,7 +20,7 @@
  */
 
 import { execSync } from "child_process";
-import type { Claude } from "../claude-sdk.js";
+import type { SessionBackend } from "../session-backend.js";
 import { scanForLeaks } from "../content-scanner.js";
 
 const IMAP_URL = process.env.EMAIL_IMAP_URL || "";
@@ -33,7 +33,7 @@ const ALLOWED_SENDERS = (process.env.EMAIL_ALLOWED_SENDERS || "").split(",").fil
 let lastSeenUid = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-export function startEmail(claude: Claude): void {
+export function startEmail(claude: SessionBackend): void {
   if (!IMAP_URL || !SMTP_URL || !USER || !PASSWORD) {
     log("warn", "Email channel not configured (missing IMAP/SMTP/USER/PASSWORD env vars)");
     return;
@@ -61,7 +61,7 @@ export function stopEmail(): void {
   }
 }
 
-function poll(claude: Claude): void {
+function poll(claude: SessionBackend): void {
   try {
     const messages = fetchNewMessages();
     for (const msg of messages) {
@@ -138,7 +138,7 @@ function fetchNewMessages(): EmailMessage[] {
   return messages;
 }
 
-async function handleMessage(msg: EmailMessage, claude: Claude): Promise<void> {
+async function handleMessage(msg: EmailMessage, claude: SessionBackend): Promise<void> {
   log("info", `Email from ${msg.from}: "${msg.subject}"`);
 
   const prompt = `[Email from ${msg.from}]\nSubject: ${msg.subject}\n\n${msg.body}`;
