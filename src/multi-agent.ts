@@ -15,9 +15,8 @@
  * Inspired by Hermes's delegate_tool, ZeroClaw's swarm.rs, and OpenClaw's routing.
  */
 
-import { execSync, spawn, type ChildProcess } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { join } from "path";
-import type Database from "better-sqlite3";
 
 // ── Types ──
 

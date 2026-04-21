@@ -2,7 +2,14 @@
   "containers": {
     "chloe": {
       "webhook": "http://localhost:8081/webhook",
-      "contacts": []
+      "contacts": ["gregnuj@gmail.com"]
+    },
+    "artemeis": {
+      "webhook": "http://localhost:8082/webhook",
+      "contacts": [
+        "lindacat9@yahoo.com",
+        "314-800-6515"
+      ]
     }
   },
   "mcp_url": "http://localhost:8010",

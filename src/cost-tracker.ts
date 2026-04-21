@@ -287,8 +287,3 @@ export class CostTracker {
     if (budget.monthlyLimitUsd !== undefined) this.budget.monthlyLimitUsd = budget.monthlyLimitUsd;
   }
 }
-
-function log(level: string, msg: string): void {
-  const ts = new Date().toISOString();
-  process.stderr.write(JSON.stringify({ ts, level, component: "cost-tracker", msg }) + "\n");
-}

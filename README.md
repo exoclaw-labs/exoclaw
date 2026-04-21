@@ -10,7 +10,8 @@ Claude Code is a capable autonomous agent, but it only runs when you're in a ter
 
 ## Features
 
-- **Persistent session** — Claude Code runs continuously via the Agent SDK (or optionally in tmux). Auto-restarts on crash. Session history is preserved across restarts.
+- **Persistent session** — Claude Code runs continuously via the Agent SDK. Auto-restarts on crash. Session history is preserved across restarts.
+- **Container supervisor + `exoclawctl`** — Tiny custom init runs as PID 1 and manages the gateway, remote-control, and user-defined services as systemd-like units. `exoclawctl status`, `start`, `stop`, `restart`, `logs -f`, and `upgrade claude` (live upgrade without rebuilding the image).
 - **Multi-channel** — Slack, Discord, Telegram, WhatsApp (via Twilio), email (IMAP/SMTP), WebSocket, and a built-in web terminal. One agent, all your channels.
 - **Web dashboard** — Vue 3 SPA with 13 themes. Chat, config editor, session history, terminal, audit log, skills management, agent management, and a setup wizard. No extra setup.
 - **Scheduled tasks** — SQLite-backed cron. Three job types: `prompt` (LLM-driven), `shell` (direct exec), `agent` (named agent delegation). Standard cron, ISO datetimes, and relative expressions (`now + 30m`).
@@ -127,6 +128,50 @@ Built-in persistent PTY terminal at `ws://localhost:8080/ws/terminal`. Accessibl
 
 An optional Python bridge is included in `extras/imessage-bridge/`. It runs on a Mac, listens for incoming iMessages, and forwards them to the gateway's `/webhook` endpoint.
 
+## Managing services inside the container
+
+PID 1 in the container is the exoclaw supervisor — a small custom init that manages services as units. You talk to it via the `exoclawctl` CLI (pre-installed at `/usr/local/bin/exoclawctl`).
+
+```bash
+docker exec exoclaw exoclawctl status              # list all units
+docker exec exoclaw exoclawctl status gateway      # detailed view of one unit
+docker exec exoclaw exoclawctl start remote-control
+docker exec exoclaw exoclawctl stop remote-control
+docker exec exoclaw exoclawctl restart gateway
+docker exec exoclaw exoclawctl logs gateway -n 500  # tail ring-buffered logs
+docker exec exoclaw exoclawctl logs gateway -f      # follow new lines
+docker exec exoclaw exoclawctl upgrade claude       # upgrade Claude Code + restart gateway
+```
+
+All commands accept `--json` for scripting.
+
+**Built-in units:**
+- **`gateway`** — the HTTP/WS server. Always started. `restart: always`. Readiness checked via `/health`.
+- **`remote-control`** — `claude remote-control` relay. Optional. Start with `exoclawctl start remote-control` or set `claude.remoteControl: true` in config. The URL is extracted from stdout and surfaced via `exoclawctl status remote-control` and `GET /api/status`.
+
+**Custom services:** add entries under `services` in `~/.exoclaw/config.json` — they become first-class units controllable via `exoclawctl`. An optional `schedule` field (5-field cron, ISO datetime, or `now + Nm`) makes the supervisor fire the unit on a schedule.
+
+```jsonc
+{
+  "services": {
+    "my-backup": {
+      "description": "Nightly rsync of workspace to /backup",
+      "command": "/bin/sh",
+      "args": ["-c", "rsync -a /home/agent/workspace/ /backup/"],
+      "restart": "no",
+      "autoStart": false,
+      "schedule": "0 3 * * *"
+    }
+  }
+}
+```
+
+The same controls are exposed via HTTP for the web dashboard:
+- `GET /api/services` — list all units
+- `GET /api/services/:unit` — one unit's full status
+- `POST /api/services/:unit/{start,stop,restart}` — lifecycle
+- `POST /api/services/upgrade` with `{"target":"claude"}` — upgrade Claude Code
+
 ## Configuration Reference
 
 Configuration is stored in `~/.exoclaw/config.json` (non-sensitive) and `~/.exoclaw/secrets.json` (tokens/keys). Both are managed by the web dashboard.
@@ -152,34 +197,46 @@ Configuration is stored in `~/.exoclaw/config.json` (non-sensitive) and `~/.exoc
 ## Architecture
 
 ```
-                    ┌──────────────────────────────────────────┐
-  Slack / Discord   │              exoclaw container            │
-  Telegram / WA  ──►│                                           │
-  Email / Web       │  Hono HTTP/WS server (port 8080)          │
-                    │         │                                 │
-                    │         ▼                                 │
-                    │  Claude Agent SDK  ─or─  tmux session     │
-                    │  (claude-sdk.ts)        (claude.ts)        │
-                    │         │                                 │
-                    │         ▼                                 │
-                    │  reply / clarify / request_approval        │
-                    │  session_search (SQLite FTS5)              │
-                    │                                           │
-                    │  Cron scheduler  ──►  claude -p            │
-                    │  SOP engine     ──►  multi-step procedures │
-                    │  Cost tracker   ──►  budget enforcement    │
-                    │  Session indexer ──►  SQLite WAL           │
-                    │  Content scanner ──►  inbound + outbound   │
-                    │  Daily notes    ──►  dreaming → MEMORY.md  │
-                    └──────────────────────────────────────────┘
+                    ┌──────────────────────────────────────────────┐
+  Slack / Discord   │              exoclaw container                │
+  Telegram / WA  ──►│                                               │
+  Email / Web       │  PID 1: exoclaw supervisor                    │
+                    │    ├── gateway   (node /app/dist/index.js)    │
+                    │    │     Hono HTTP/WS server on port 8080     │
+                    │    │     Claude Agent SDK (in-process)        │
+                    │    │     reply / clarify / request_approval   │
+                    │    │     session_search (SQLite FTS5)         │
+                    │    │                                          │
+                    │    └── remote-control (optional)              │
+                    │          claude remote-control relay          │
+                    │                                               │
+                    │    control socket: ~/.exoclaw/ctl.sock        │
+                    │    CLI: /usr/local/bin/exoclawctl             │
+                    │                                               │
+                    │  Cron scheduler  ──►  claude -p                │
+                    │  SOP engine     ──►  multi-step procedures     │
+                    │  Cost tracker   ──►  budget enforcement        │
+                    │  Session indexer ──►  SQLite WAL               │
+                    │  Content scanner ──►  inbound + outbound       │
+                    │  Daily notes    ──►  dreaming → MEMORY.md      │
+                    └──────────────────────────────────────────────┘
 ```
 
 **Message flow:**
 
 1. Message arrives via any channel adapter.
-2. Gateway sends it to the Claude session — either via Agent SDK `query()` or through the channel MCP server (tmux mode).
+2. Gateway sends it to the Claude session via the Agent SDK `query()` / V2 session.
 3. Claude processes the message, calls `reply` to send a response.
 4. Gateway streams the response back to the originating channel, scanning outbound content before delivery.
+
+**Supervisor flow:**
+
+1. Container boots. PID 1 is the supervisor.
+2. Supervisor spawns the `gateway` unit as its first child and waits for `/health` to pass.
+3. If `config.claude.remoteControl === true` or `ENABLE_REMOTE_CONTROL=true`, the `remote-control` unit is spawned in parallel.
+4. Any user-defined services in `config.services` are loaded and spawned (if `autoStart: true`) or queued for their `schedule`.
+5. Crashes trigger exponential backoff restarts (1s → 30s, reset after 60s healthy). 10 crashes in 5 minutes → quarantine (manual `exoclawctl start` required).
+6. `docker stop` sends SIGTERM to PID 1; supervisor forwards SIGTERM to all unit process groups and waits up to `stop_grace_period` (30s) before SIGKILL.
 
 **Claude-first design:** The gateway is thin scaffolding. If Claude Code can handle a feature via prompts, skills, or MCP tools, it does. Gateway-level implementations are reserved for things that need lower latency, stronger safety guarantees, or structured data.
 

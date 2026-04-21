@@ -35,20 +35,17 @@ export function runPrune(db: SessionDB, config?: Partial<PruneConfig>, audit?: A
   dailyNotesPruned: number;
 } {
   const cfg = { ...DEFAULTS, ...config };
-  let messagesDeleted = 0;
-  let sessionsDeleted = 0;
-  let dailyNotesPruned = 0;
 
   // 1. Prune old messages
-  messagesDeleted = db.pruneOldMessages(cfg.messageRetentionDays);
+  let messagesDeleted = db.pruneOldMessages(cfg.messageRetentionDays);
 
   // 2. Remove empty sessions (no messages left)
-  sessionsDeleted = db.db.prepare(`
+  let sessionsDeleted = db.db.prepare(`
     DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM messages)
   `).run().changes;
 
   // 3. Prune old daily notes
-  dailyNotesPruned = pruneDailyNotes(cfg.dailyNoteRetentionDays);
+  const dailyNotesPruned = pruneDailyNotes(cfg.dailyNoteRetentionDays);
 
   // 4. Enforce disk budget
   if (cfg.maxDbSizeMb > 0) {

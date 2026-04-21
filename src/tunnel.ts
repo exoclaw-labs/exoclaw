@@ -14,6 +14,7 @@
  */
 
 import { spawn, type ChildProcess } from "child_process";
+import { existsSync } from "fs";
 
 export type TunnelProvider = "cloudflare" | "ngrok" | "tailscale" | "custom" | "none";
 
@@ -64,9 +65,21 @@ export class TunnelManager {
     this._startedAt = new Date().toISOString();
     this._error = null;
 
+    const extraEnv: Record<string, string> = {};
+    if (this.config.token) {
+      extraEnv.TUNNEL_TOKEN = this.config.token;
+      // Tailscale wrapper uses TS_AUTHKEY; set it from token if not already in env
+      if (this.config.provider === "tailscale" && !process.env.TS_AUTHKEY) {
+        extraEnv.TS_AUTHKEY = this.config.token;
+      }
+    }
+    if (this.config.provider === "tailscale" && this.config.tunnelName) {
+      extraEnv.TS_HOSTNAME = this.config.tunnelName;
+    }
+
     this.proc = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...(this.config.token ? { TUNNEL_TOKEN: this.config.token } : {}) },
+      env: { ...process.env, ...extraEnv },
     });
 
     this.proc.stdout?.on("data", (data: Buffer) => {
@@ -150,11 +163,15 @@ export class TunnelManager {
           command: "ngrok",
           args: ["http", String(port), ...(this.config.token ? ["--authtoken", this.config.token] : []), "--log", "stdout"],
         };
-      case "tailscale":
-        return {
-          command: "tailscale",
-          args: ["funnel", String(port)],
-        };
+      case "tailscale": {
+        // In container: wrapper script manages tailscaled lifecycle + auth
+        const wrapper = "/app/scripts/tailscale-funnel.sh";
+        if (existsSync(wrapper)) {
+          return { command: wrapper, args: [String(port)] };
+        }
+        // Local dev: system tailscale is already running
+        return { command: "tailscale", args: ["funnel", String(port)] };
+      }
       case "custom":
         if (!this.config.command) return { command: "", args: [] };
         return {

@@ -19,7 +19,11 @@ export type AuditEventType =
   | "skill_change"   // Skill created/updated/deleted
   | "error"          // System errors
   | "session"        // Session start/restart/close
-  | "message";       // Messages sent to/from agent
+  | "message"        // Messages sent to/from agent
+  | "service_start"  // Supervisor unit started
+  | "service_stop"   // Supervisor unit stopped
+  | "service_restart" // Supervisor unit restarted
+  | "claude_upgrade"; // Claude Code upgraded via supervisor
 
 export interface AuditEvent {
   id?: number;

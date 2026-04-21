@@ -273,7 +273,7 @@ describe("loadConfig from YAML", () => {
   });
 
   it("applies EXOCLAW_PEERS env overlay", async () => {
-    const { SecretValue, stringifyYaml } = await import("./config-store.js");
+    const { stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
     writeFileSync(
       join(dir, "config.yml"),
@@ -434,7 +434,7 @@ describe("JSON -> YAML migration", () => {
 
 describe("loadConfigMasked", () => {
   it("masks SecretValue fields with the mask placeholder", async () => {
-    const { SecretValue, stringifyYaml, MASK } = await import("./config-store.js");
+    const { SecretValue, stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
 
     writeFileSync(
@@ -482,7 +482,7 @@ describe("loadConfigMasked", () => {
 
 describe("saveConfigSafe mask restoration", () => {
   it("restores masked values from disk when saved back", async () => {
-    const { SecretValue, stringifyYaml, MASK } = await import("./config-store.js");
+    const { SecretValue, stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
 
     // Write initial config with real secrets
@@ -555,7 +555,7 @@ describe("saveConfigSafe mask restoration", () => {
   });
 
   it("restores deeply nested masked values", async () => {
-    const { SecretValue, stringifyYaml, MASK } = await import("./config-store.js");
+    const { SecretValue, stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
 
     writeFileSync(
@@ -589,7 +589,7 @@ describe("saveConfigSafe mask restoration", () => {
 
 describe("saveConfig", () => {
   it("re-tags existing secret paths when saving", async () => {
-    const { SecretValue, stringifyYaml, parseYaml } = await import("./config-store.js");
+    const { SecretValue, stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
 
     // Write initial config with secrets
@@ -619,7 +619,7 @@ describe("saveConfig", () => {
   });
 
   it("auto-tags SECRET_FIELD_HINTS fields in new saves", async () => {
-    const { SecretValue, stringifyYaml, parseYaml } = await import("./config-store.js");
+    const { stringifyYaml } = await import("./config-store.js");
     const dir = join(TEST_HOME, ".exoclaw");
 
     // Write initial config without secrets

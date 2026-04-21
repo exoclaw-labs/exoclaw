@@ -30,3 +30,6 @@ npm-debug.log*
 docker-compose.override.yml
 .claude/
 tmp/
+
+# Extras (local-only bridges)
+extras/imessage-bridge/

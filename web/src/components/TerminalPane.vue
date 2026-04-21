@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { getToken } from "../composables/useApi";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ sessionId: string }>();
@@ -45,7 +46,9 @@ function connect() {
   term.open(containerEl.value);
   nextTick(() => { fitAddon?.fit(); });
 
-  ws = new WebSocket(termWsUrl());
+  const token = getToken();
+  const protocols = token ? [`bearer.${token}`] : [];
+  ws = new WebSocket(termWsUrl(), protocols);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {

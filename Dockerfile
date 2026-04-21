@@ -23,9 +23,12 @@ ARG EXOCLAW_DOCKER_APT_PACKAGES
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    bash ca-certificates curl procps git gnupg jq vim tmux sudo \
-    python3 python3-pip python3-venv pipx \
-    build-essential python3-dev \
+    binaryen build-essential bzip2 ca-certificates curl \
+    dnsutils fd-find file git gnupg iputils-ping jq \
+    less lsof nano netcat-openbsd openssh-client \
+    pipx procps python3-dev ripgrep rsync socat \
+    sqlite3 strace sudo tmux tree unzip vim \
+    wget xz-utils yq zip \
     ${EXOCLAW_DOCKER_APT_PACKAGES} \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -34,7 +37,7 @@ RUN apt-get update && \
 ARG EXOCLAW_NPM_PACKAGES
 
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
-RUN npm i -g @anthropic-ai/claude-code agent-browser agent-browser-mcp ${EXOCLAW_NPM_PACKAGES}
+RUN npm i -g @anthropic-ai/claude-code @openai/codex agent-browser agent-browser-mcp ${EXOCLAW_NPM_PACKAGES}
 
 ENV PIPX_HOME=/opt/pipx
 ENV PIPX_BIN_DIR=/usr/local/bin
@@ -60,6 +63,22 @@ COPY default-skills /app/default-skills
 COPY scripts/ /app/scripts/
 RUN chmod 755 /app/scripts/*.sh
 
+# Install the exoclawctl CLI shim (wraps the compiled supervisor CLI)
+RUN install -m 755 /app/scripts/exoclawctl.sh /usr/local/bin/exoclawctl
+
+# ── Install Scripts ────────────────────────────────────────────────────────────
+
+# Example: EXOCLAW_INSTALL_SCRIPTS="xiond rust" or "rust:wasm32-wasip1"
+ARG EXOCLAW_INSTALL_SCRIPTS
+RUN set -eu; \
+    PATH="/app/scripts:$PATH"; \
+    for script in $EXOCLAW_INSTALL_SCRIPTS; do \
+    case "$script" in \
+    *:*) install-${script%%:*}.sh $(echo "${script#*:}" | tr ':' ' ') ;; \
+    *) install-${script}.sh ;; \
+    esac || { echo "Install script failed: $script" >&2; exit 1; }; \
+    done
+
 # Always reinstall claude-code (pass --build-arg CACHEBUST=$(date +%s) to force)
 ARG CACHEBUST=1
 RUN npm i -g @anthropic-ai/claude-code@latest
@@ -82,4 +101,4 @@ ENV ENABLE_CLAUDEAI_MCP_SERVERS=false
 
 EXPOSE 8080
 
-CMD ["node", "/app/dist/index.js"]
+CMD ["node", "/app/dist/supervisor/index.js"]

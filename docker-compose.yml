@@ -16,6 +16,11 @@ x-claude-env: &claude-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
 
+  # ── Gateway API token (shared across fleet) ───────────────────────────────
+  # Every container uses this as its own Bearer token AND as the peer token
+  # when calling another container's /mcp endpoint. Set in .env.
+  EXOCLAW_API_TOKEN: ${EXOCLAW_API_TOKEN:-}
+
   # ── Model ─────────────────────────────────────────────────────────────────
   # Leave empty to use the config/settings default
   CLAUDE_MODEL: ${CLAUDE_MODEL:-}
@@ -65,11 +70,20 @@ x-claude-env: &claude-env
   CHAT_SCROLLBACK: ${CHAT_SCROLLBACK:-5000}
 
 
+x-build: &build
+  context: .
+  args:
+    EXOCLAW_DOCKER_APT_PACKAGES: ${EXOCLAW_DOCKER_APT_PACKAGES:-}
+    EXOCLAW_NPM_PACKAGES: ${EXOCLAW_NPM_PACKAGES:-}
+    EXOCLAW_INSTALL_SCRIPTS: ${EXOCLAW_INSTALL_SCRIPTS:-}
+
 services:
   exoclaw:
-    build: .
+    build: *build
     container_name: exoclaw
     restart: unless-stopped
+    # Give the supervisor time to SIGTERM and clean up both units before Docker kills us.
+    stop_grace_period: 30s
     ports: ["127.0.0.1:8080:8080"]
     shm_size: "2gb"
     environment:
@@ -85,9 +99,10 @@ services:
       start_period: 15s
 
   shortlived:
-    build: .
+    build: *build
     container_name: shortlived
     restart: unless-stopped
+    stop_grace_period: 30s
     ports: ["127.0.0.1:8085:8080"]
     shm_size: "2gb"
     environment:

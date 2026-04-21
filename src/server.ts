@@ -19,7 +19,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, existsSync } from "fs";
 import { join } from "path";
 import { exec, execSync, execFileSync } from "child_process";
-import { createSessionBackend, type SessionBackend } from "./session-backend.js";
+import { createSessionBackend } from "./session-backend.js";
 import type { SessionConfig, McpServerDef } from "./session-backend.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -56,7 +56,7 @@ import { MessageQueue, type QueueConfig } from "./message-queue.js";
 import { registerOpenAIRoutes } from "./openai-compat.js";
 import { SupervisorClient } from "./supervisor/client.js";
 import { SupervisorUnavailable } from "./supervisor/protocol.js";
-import { HookRegistry, type HookContext } from "./hooks.js";
+import { HookRegistry } from "./hooks.js";
 import { KnowledgeGraph } from "./knowledge-graph.js";
 import { compressSession, compressRecentSessions } from "./context-compressor.js";
 import { runPrune, seedPruneJob } from "./session-pruner.js";
@@ -211,9 +211,31 @@ export function createApp(config: GatewayConfig) {
     const token = config.apiToken;
     app.use("*", async (c, next) => {
       const p = c.req.path;
-      if (p === "/health" || p === "/openapi.json" || p.startsWith("/slack/") || p.startsWith("/assets/") || p.startsWith("/api/auth") || p.startsWith("/api/session") || p.startsWith("/api/setup") || (!p.startsWith("/api") && !p.startsWith("/webhook") && !p.startsWith("/mcp"))) {
+
+      // Always public: static assets, health, docs, Slack webhooks, read-only status
+      if (
+        p === "/health" ||
+        p === "/openapi.json" ||
+        p === "/api/auth/status" ||
+        p === "/api/setup/status" ||
+        p.startsWith("/slack/") ||
+        p.startsWith("/assets/") ||
+        (!p.startsWith("/api") && !p.startsWith("/webhook") && !p.startsWith("/mcp"))
+      ) {
         return next();
       }
+
+      // Public only until the setup wizard finishes — after that, require Bearer
+      if (p === "/api/setup/complete") {
+        const cfg = loadConfig();
+        if (!cfg.setupComplete) return next();
+      }
+
+      // Public only while the claude-login tmux is active (pre-auth login UI)
+      if (p === "/api/session/pane" || p === "/api/session/keys") {
+        if (isLoginTmuxAlive()) return next();
+      }
+
       const bearer = c.req.header("authorization")?.replace("Bearer ", "");
       const secret = c.req.header("x-webhook-secret");
       if (bearer !== token && secret !== token) {
@@ -321,6 +343,86 @@ export function createApp(config: GatewayConfig) {
     } catch (err) {
       if (err instanceof SupervisorUnavailable) return c.json({ error: "supervisor_unavailable" }, 503);
       return c.json({ error: "upgrade_failed", detail: (err as Error).message }, 500);
+    }
+  });
+
+  // ── Logs API (per-unit rotated files written by the supervisor) ──
+
+  const LOG_DIR = process.env.EXOCLAW_LOG_DIR || join(process.env.HOME || "/home/agent", ".exoclaw", "logs");
+  const MAX_READ_BYTES = 256 * 1024; // cap per request
+
+  const isValidUnitName = (s: string) => /^[a-zA-Z0-9_-]+$/.test(s);
+
+  app.get("/api/logs", (c) => {
+    try {
+      if (!existsSync(LOG_DIR)) return c.json({ logDir: LOG_DIR, units: [] });
+      const entries = readdirSync(LOG_DIR);
+      const byUnit = new Map<string, { unit: string; size: number; mtime: string; rotated: number[] }>();
+      for (const name of entries) {
+        const m = name.match(/^([a-zA-Z0-9_-]+)\.log(?:\.(\d+))?$/);
+        if (!m) continue;
+        const unit = m[1];
+        const rotIdx = m[2] ? Number(m[2]) : 0;
+        let entry = byUnit.get(unit);
+        if (!entry) {
+          entry = { unit, size: 0, mtime: "", rotated: [] };
+          byUnit.set(unit, entry);
+        }
+        try {
+          const st = statSync(join(LOG_DIR, name));
+          if (rotIdx === 0) {
+            entry.size = st.size;
+            entry.mtime = st.mtime.toISOString();
+          } else {
+            entry.rotated.push(rotIdx);
+          }
+        } catch { /* intentional */ }
+      }
+      const units = Array.from(byUnit.values())
+        .map((u) => ({ ...u, rotated: u.rotated.sort((a, b) => a - b) }))
+        .sort((a, b) => a.unit.localeCompare(b.unit));
+      return c.json({ logDir: LOG_DIR, units });
+    } catch (err) {
+      return c.json({ error: "log_list_failed", detail: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/logs/:unit", (c) => {
+    const unit = c.req.param("unit");
+    if (!isValidUnitName(unit)) return c.json({ error: "invalid_unit" }, 400);
+
+    const rotated = Number(c.req.query("rotated") ?? 0);
+    if (!Number.isInteger(rotated) || rotated < 0 || rotated > 9) {
+      return c.json({ error: "invalid_rotated" }, 400);
+    }
+    const suffix = rotated === 0 ? "" : `.${rotated}`;
+    const path = join(LOG_DIR, `${unit}.log${suffix}`);
+    if (!existsSync(path)) return c.json({ error: "not_found", unit, rotated }, 404);
+
+    try {
+      const st = statSync(path);
+      // Read at most MAX_READ_BYTES from the tail of the file.
+      const readBytes = Math.min(MAX_READ_BYTES, st.size);
+      const start = st.size - readBytes;
+      const buf = readFileSync(path);
+      const chunk = buf.subarray(start).toString("utf-8");
+      // If we sliced mid-line, drop the leading partial line.
+      const content = start > 0 ? chunk.slice(chunk.indexOf("\n") + 1) : chunk;
+
+      const tailN = Math.max(1, Math.min(10_000, Number(c.req.query("tail") ?? 500)));
+      let lines = content.split("\n").filter((l) => l.length > 0);
+      if (lines.length > tailN) lines = lines.slice(-tailN);
+
+      return c.json({
+        unit,
+        rotated,
+        size: st.size,
+        mtime: st.mtime.toISOString(),
+        truncated: start > 0,
+        lines,
+      });
+    } catch (err) {
+      return c.json({ error: "log_read_failed", detail: (err as Error).message }, 500);
     }
   });
 
@@ -1243,7 +1345,7 @@ export function createApp(config: GatewayConfig) {
     if (!isLoginTmuxAlive()) return;
     log("info", "Killing login tmux session (auth complete)");
     if (loginAutoAcceptTimer) { clearInterval(loginAutoAcceptTimer); loginAutoAcceptTimer = null; }
-    try { execSync(`tmux kill-session -t ${LOGIN_TMUX} 2>&1`); } catch {}
+    try { execSync(`tmux kill-session -t ${LOGIN_TMUX} 2>&1`); } catch { /* best effort */ }
   }
 
   /**
@@ -1273,21 +1375,21 @@ export function createApp(config: GatewayConfig) {
       // Theme picker — accept default
       if (pane.includes("Syntax theme:") || pane.includes("Choose a theme") || pane.includes("Select a color")) {
         log("info", "Login auto-accept: theme picker");
-        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch { /* best effort */ }
         return;
       }
 
       // Workspace trust
       if (pane.includes("Yes, I trust this folder")) {
         log("info", "Login auto-accept: workspace trust");
-        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch { /* best effort */ }
         return;
       }
 
       // "Press Enter to continue" after login success
       if (pane.includes("Press Enter to continue") || pane.includes("Login successful")) {
         log("info", "Login auto-accept: post-login continue");
-        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch { /* best effort */ }
         return;
       }
 
@@ -1297,9 +1399,9 @@ export function createApp(config: GatewayConfig) {
         try {
           execSync(`tmux send-keys -t ${LOGIN_TMUX} Down`, { env: process.env });
           setTimeout(() => {
-            try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+            try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch { /* best effort */ }
           }, 300);
-        } catch {}
+        } catch { /* best effort */ }
         return;
       }
 
@@ -1312,7 +1414,7 @@ export function createApp(config: GatewayConfig) {
         !pane.includes("No, exit")
       ) {
         log("info", "Login auto-accept: generic confirm");
-        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch {}
+        try { execSync(`tmux send-keys -t ${LOGIN_TMUX} Enter`, { env: process.env }); } catch { /* best effort */ }
         return;
       }
     }, 2000);
@@ -1707,7 +1809,7 @@ export function createApp(config: GatewayConfig) {
         const dir = join(agentsDir, e.name);
         const files: Record<string, string> = {};
         for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
-          try { files[f] = readFileSync(join(dir, f), "utf-8"); } catch {}
+          try { files[f] = readFileSync(join(dir, f), "utf-8"); } catch { /* best effort */ }
         }
         return { name: e.name, files };
       });
@@ -2088,26 +2190,6 @@ export function createApp(config: GatewayConfig) {
 
 // ── Helpers ──
 
-async function collectResponse(claude: SessionBackend, prompt: string) {
-  let fullText = "";
-
-  for await (const event of claude.send(prompt)) {
-    if (event.type === "chunk") fullText += event.content;
-    if (event.type === "done") fullText = event.content || fullText;
-  }
-
-  return { text: fullText };
-}
-
-/**
- * Parse the tmux pane content into structured chat messages.
- *
- * Claude Code TUI format:
- *   ❯ <user message>
- *   ● <assistant response>
- *   ❯ <next user message>
- *   ...
- */
 function log(level: string, msg: string): void {
   const ts = new Date().toISOString();
   process.stderr.write(JSON.stringify({ ts, level, component: "server", msg }) + "\n");

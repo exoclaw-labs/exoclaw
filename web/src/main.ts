@@ -7,6 +7,7 @@ import Dashboard from "./views/Dashboard.vue";
 import Config from "./views/Config.vue";
 import Terminal from "./views/Terminal.vue";
 import Chat from "./views/Chat.vue";
+import Logs from "./views/Logs.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,6 +17,7 @@ const router = createRouter({
     { path: "/chat", component: Chat, meta: { title: "Chat" } },
     { path: "/config/:section?", component: Config, meta: { title: "Configuration" } },
     { path: "/terminal", component: Terminal, meta: { title: "Terminal" } },
+    { path: "/logs", component: Logs, meta: { title: "Logs" } },
   ],
 });
 

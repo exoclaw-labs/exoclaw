@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "fs";
 import { join } from "path";
-import { Document, Scalar, parse, stringify } from "yaml";
+import { Document, Scalar, parse } from "yaml";
 import type { ScalarTag } from "yaml";
 
 // ── SecretValue + YAML tag ──
@@ -22,7 +22,7 @@ const secretTag: ScalarTag = {
   tag: "!secret",
   identify: (value: unknown) => value instanceof SecretValue,
   resolve(value: string) { return new SecretValue(value); },
-  createNode(schema: unknown, value: unknown, ctx: unknown) {
+  createNode(_schema: unknown, value: unknown, _ctx: unknown) {
     const sv = value as SecretValue;
     const node = new Scalar(sv.value);
     node.tag = "!secret";
@@ -245,7 +245,7 @@ function restoreMasked(incoming: Record<string, any>, existing: Record<string, a
 /** Migrate config.json + secrets.json -> config.yml */
 function migrateFromJson() {
   log("info", "Migrating config.json -> config.yml");
-  let config: Record<string, any> = {};
+  let config: Record<string, any>;
   try { config = JSON.parse(readFileSync(LEGACY_CONFIG_PATH, "utf-8")); } catch { return; }
 
   let secrets: Record<string, any> = {};

@@ -15,7 +15,7 @@
 
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import type Database from "better-sqlite3";
 
 // ── Types ──
@@ -305,7 +305,6 @@ export class SOPEngine {
   }
 
   private executePromptStep(step: SOPStep): Promise<string> {
-    const { spawn } = require("child_process");
     return new Promise((resolve, reject) => {
       const proc = spawn("claude", [
         "-p", "--output-format", "text",

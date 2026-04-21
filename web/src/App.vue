@@ -1,13 +1,31 @@
 <script setup lang="ts">
 import { ref, computed, watchEffect, onMounted } from "vue";
 import { useRoute } from "vue-router";
-import { fetchSetupStatus } from "./composables/useApi";
+import { fetchSetupStatus, getToken, setToken, setOnUnauthorized } from "./composables/useApi";
 import SetupWizard from "./views/SetupWizard.vue";
 
 const route = useRoute();
 
 // Tri-state: null = loading, false = needs setup, true = ready
 const setupComplete = ref<boolean | null>(null);
+
+// Auth gate — shown when any API call returns 401
+const needsAuth = ref(false);
+const tokenInput = ref("");
+const authError = ref("");
+
+setOnUnauthorized(() => { needsAuth.value = true; });
+
+function submitToken() {
+  const t = tokenInput.value.trim();
+  if (!t) { authError.value = "Token cannot be empty"; return; }
+  setToken(t);
+  needsAuth.value = false;
+  authError.value = "";
+  tokenInput.value = "";
+  // Reload so all components re-fetch with the new token
+  window.location.reload();
+}
 
 onMounted(async () => {
   try {
@@ -60,6 +78,7 @@ const nav = [
   { to: "/dashboard", label: "Dashboard", icon: "bi-speedometer2" },
   { to: "/chat", label: "Chat", icon: "bi-chat-dots" },
   { to: "/terminal", label: "Terminal", icon: "bi-terminal" },
+  { to: "/logs", label: "Logs", icon: "bi-journal-text" },
 ];
 
 const configSections = [
@@ -75,8 +94,30 @@ const isConfigPage = computed(() => route.path.startsWith("/config"));
 </script>
 
 <template>
+  <!-- Auth gate -->
+  <div v-if="needsAuth" class="d-flex align-items-center justify-content-center vh-100">
+    <div class="card shadow-sm" style="max-width: 380px; width: 100%">
+      <div class="card-body p-4 text-center">
+        <i class="bi bi-shield-lock fs-1 text-primary mb-3 d-block"></i>
+        <h5 class="mb-3">API Token Required</h5>
+        <p class="text-body-secondary small mb-3">Paste your <code>EXOCLAW_API_TOKEN</code> to continue.</p>
+        <form @submit.prevent="submitToken">
+          <input
+            v-model="tokenInput"
+            type="password"
+            class="form-control form-control-sm font-monospace mb-2"
+            placeholder="Token"
+            autofocus
+          />
+          <div v-if="authError" class="text-danger small mb-2">{{ authError }}</div>
+          <button type="submit" class="btn btn-primary btn-sm w-100">Connect</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Loading state -->
-  <div v-if="setupComplete === null" class="d-flex align-items-center justify-content-center vh-100">
+  <div v-else-if="setupComplete === null" class="d-flex align-items-center justify-content-center vh-100">
     <div class="text-center">
       <div class="spinner-border text-primary mb-3"></div>
       <p class="text-body-secondary mb-0">Loading...</p>
