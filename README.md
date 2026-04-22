@@ -79,7 +79,7 @@ The `docker-compose.override.yml` demonstrates running multiple named instances 
 
 ## Channel Setup
 
-Channel config lives in `/home/agent/.exoclaw/config.json` (editable via the web dashboard or direct file edit). Secrets (tokens, signing keys) are stored in `secrets.json` and are never returned by the API.
+Channel config lives in `/home/agent/.exoclaw/config.yml` (editable via the web dashboard or direct file edit). Sensitive values (tokens, signing keys) are stored inline using `!secret` YAML tags and are never returned by the API.
 
 ### Slack
 
@@ -174,9 +174,9 @@ The same controls are exposed via HTTP for the web dashboard:
 
 ## Configuration Reference
 
-Configuration is stored in `~/.exoclaw/config.json` (non-sensitive) and `~/.exoclaw/secrets.json` (tokens/keys). Both are managed by the web dashboard.
+Configuration is stored in `~/.exoclaw/config.yml`. Sensitive values are tagged with `!secret` inline — there is no separate secrets file. Both plain and secret values are managed by the web dashboard.
 
-### Key config.json fields
+### Key config.yml fields
 
 | Field | Default | Description |
 |---|---|---|
